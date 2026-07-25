@@ -14,6 +14,8 @@ import (
 	"runtime"
 	"strings"
 	"unicode/utf16"
+
+	"github.com/go-rod/rod/lib/launcher"
 )
 
 // extensionList collects repeatable --extension flag values.
@@ -27,6 +29,36 @@ func (e *extensionList) Set(v string) error {
 	}
 	*e = append(*e, v)
 	return nil
+}
+
+// configureExtensions points Chrome at the given extensions, returning l
+// unchanged when there are none.
+//
+// Old headless Chrome cannot run extensions at all, so extensions switch to the
+// new headless mode: https://developer.chrome.com/docs/chromium/new-headless
+//
+// New headless is the full browser stack — renderer, GPU, utility services and
+// the extension's own service worker — where rodney's --single-process becomes
+// dangerous: it collapses all of those into one OS process (measured: 0 child
+// processes and 205 threads, versus 10 and 59 without it), so any CHECK failure
+// or bad access anywhere takes down the entire browser rather than one renderer.
+// It is dropped here only; launches without --extension keep it, preserving the
+// screenshot behaviour it was added for in gVisor/container environments.
+func configureExtensions(l *launcher.Launcher, headless bool, extensions []extensionInfo) *launcher.Launcher {
+	if len(extensions) == 0 {
+		return l
+	}
+	dirs := make([]string, len(extensions))
+	for i, ext := range extensions {
+		dirs[i] = ext.Dir
+	}
+	l = l.HeadlessNew(headless).
+		Delete("single-process").
+		Set("load-extension", strings.Join(dirs, ",")).
+		Set("disable-extensions-except", strings.Join(dirs, ","))
+	// Chrome 137+ ignores --load-extension unless this feature is turned off.
+	// Append rather than Set: rod already disables some features by default.
+	return l.Append("disable-features", "DisableLoadExtensionCommandLineSwitch")
 }
 
 // manifest is the subset of manifest.json we care about.

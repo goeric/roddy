@@ -408,20 +408,7 @@ func cmdStart(args []string) {
 		l = l.Delete("no-startup-window")
 	}
 
-	if len(extensions) > 0 {
-		dirs := make([]string, len(extensions))
-		for i, ext := range extensions {
-			dirs[i] = ext.Dir
-		}
-		// Old headless Chrome cannot run extensions at all, so extensions force
-		// the new headless mode: https://developer.chrome.com/docs/chromium/new-headless
-		l = l.HeadlessNew(headless).
-			Set("load-extension", strings.Join(dirs, ",")).
-			Set("disable-extensions-except", strings.Join(dirs, ","))
-		// Chrome 137+ ignores --load-extension unless this feature is turned off.
-		// Append rather than Set: rod already disables some features by default.
-		l = l.Append("disable-features", "DisableLoadExtensionCommandLineSwitch")
-	}
+	l = configureExtensions(l, headless, extensions)
 
 	if bin := os.Getenv("ROD_CHROME_BIN"); bin != "" {
 		l = l.Bin(bin)

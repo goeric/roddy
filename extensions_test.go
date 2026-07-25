@@ -540,18 +540,110 @@ func TestUnpackExtension_RejectsPathTraversal(t *testing.T) {
 // TestExtension_LoadsInHeadlessChrome is the test that matters: it launches a
 // headless browser the same way "rodney start --extension" does and checks the
 // extension's content script actually ran on a page.
-func TestExtension_LoadsInHeadlessChrome(t *testing.T) {
-	dir := writeTestExtension(t, filepath.Join(t.TempDir(), "ext"))
-
-	l := launcher.New().
+// baseLauncher mirrors the flags cmdStart sets before configureExtensions runs.
+func baseLauncher() *launcher.Launcher {
+	return launcher.New().
 		Set("no-sandbox").
 		Set("disable-gpu").
 		Set("single-process").
-		Leakless(false).
-		HeadlessNew(true).
-		Set("load-extension", dir).
-		Set("disable-extensions-except", dir).
-		Append("disable-features", "DisableLoadExtensionCommandLineSwitch")
+		Leakless(false)
+}
+
+// headlessMode reports the --headless value: "" for old headless (the flag is
+// present but valueless), "new" for new headless, "off" when it is absent.
+// launcher.Get panics on a valueless flag, so read the values directly.
+func headlessMode(l *launcher.Launcher) string {
+	values, ok := l.GetFlags("headless")
+	if !ok {
+		return "off"
+	}
+	if len(values) == 0 {
+		return ""
+	}
+	return values[0]
+}
+
+func TestConfigureExtensions_NoExtensionsLeavesLauncherAlone(t *testing.T) {
+	l := configureExtensions(baseLauncher().Headless(true), true, nil)
+
+	if !l.Has("single-process") {
+		t.Error("--single-process was dropped for a launch with no extensions")
+	}
+	if got := headlessMode(l); got != "" {
+		t.Errorf("headless = %q, want %q (old headless) when no extensions are loaded", got, "")
+	}
+	if l.Has("load-extension") {
+		t.Error("--load-extension set with no extensions")
+	}
+}
+
+// New headless brings up the full browser stack (renderer, GPU, utility services,
+// the extension service worker). --single-process collapses all of that into one
+// OS process where a single CHECK failure kills the whole browser, so extensions
+// must drop it.
+func TestConfigureExtensions_DropsSingleProcess(t *testing.T) {
+	l := configureExtensions(baseLauncher().Headless(true), true,
+		[]extensionInfo{{Dir: "/tmp/ext"}})
+
+	if l.Has("single-process") {
+		t.Error("--single-process survived; new headless + extensions must not run single-process")
+	}
+}
+
+func TestConfigureExtensions_SelectsNewHeadless(t *testing.T) {
+	l := configureExtensions(baseLauncher().Headless(true), true,
+		[]extensionInfo{{Dir: "/tmp/ext"}})
+
+	if got := headlessMode(l); got != "new" {
+		t.Errorf("headless = %q, want %q; old headless cannot run extensions", got, "new")
+	}
+}
+
+// --show must stay a real visible window, not new headless.
+func TestConfigureExtensions_HeadedStaysHeaded(t *testing.T) {
+	l := configureExtensions(baseLauncher().Headless(false), false,
+		[]extensionInfo{{Dir: "/tmp/ext"}})
+
+	if got := headlessMode(l); got != "off" {
+		t.Errorf("headless = %q, want it absent, for a --show launch", got)
+	}
+	if l.Has("single-process") {
+		t.Error("--single-process survived; extensions must not run single-process")
+	}
+}
+
+func TestConfigureExtensions_JoinsDirsWithCommas(t *testing.T) {
+	l := configureExtensions(baseLauncher().Headless(true), true,
+		[]extensionInfo{{Dir: "/tmp/one"}, {Dir: "/tmp/two"}})
+
+	const want = "/tmp/one,/tmp/two"
+	if got := l.Get("load-extension"); got != want {
+		t.Errorf("load-extension = %q, want %q", got, want)
+	}
+	if got := l.Get("disable-extensions-except"); got != want {
+		t.Errorf("disable-extensions-except = %q, want %q", got, want)
+	}
+}
+
+// rod disables some features by default; the extension switch must be appended
+// to those rather than replacing them.
+func TestConfigureExtensions_AppendsToExistingDisableFeatures(t *testing.T) {
+	base := baseLauncher().Headless(true).Set("disable-features", "TranslateUI")
+	l := configureExtensions(base, true, []extensionInfo{{Dir: "/tmp/ext"}})
+
+	flags, _ := l.GetFlags("disable-features")
+	got := strings.Join(flags, ",")
+	const want = "TranslateUI,DisableLoadExtensionCommandLineSwitch"
+	if got != want {
+		t.Errorf("disable-features = %q, want %q", got, want)
+	}
+}
+
+func TestExtension_LoadsInHeadlessChrome(t *testing.T) {
+	dir := writeTestExtension(t, filepath.Join(t.TempDir(), "ext"))
+
+	l := configureExtensions(baseLauncher().Headless(true), true,
+		[]extensionInfo{{Dir: dir}})
 
 	if bin := os.Getenv("ROD_CHROME_BIN"); bin != "" {
 		l = l.Bin(bin)
