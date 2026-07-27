@@ -1,8 +1,31 @@
 package main
 
 import (
+	"runtime"
+
 	"github.com/go-rod/rod/lib/launcher"
 )
+
+// singleProcessSupported reports whether --single-process is safe to pass on
+// this platform.
+//
+// The flag collapses Chromium's renderer, GPU and utility services into the
+// browser process. It is there because the multi-process compositor hangs under
+// gVisor and screenshots time out (notes/gvisor-screenshots/README.md), but on
+// macOS the collapse is fatal. media/capture's Apple backend CHECKs that it owns
+// a CFRunLoop-enabled thread, which only holds when video capture has a utility
+// process of its own, so any page that touches navigator.mediaDevices aborts the
+// whole browser:
+//
+//	FATAL:video_capture_device_factory_apple.mm(37)] Check failed: mode.
+//	The MacOS video capture code must be run on a CFRunLoop-enabled thread
+//
+// Device enumeration is routine in the fingerprinting scripts commercial sites
+// ship, which is what made this look like "heavy sites crash the browser".
+// Losing --single-process on macOS costs nothing: gVisor is a Linux sandbox.
+func singleProcessSupported() bool {
+	return runtime.GOOS != "darwin"
+}
 
 // configureExperiments stops Chromium from running features that are still
 // being written.
