@@ -378,9 +378,11 @@ func cmdStart(args []string) {
 		Set("no-sandbox").
 		Set("disable-gpu").
 		Set("single-process"). // Required for screenshots in gVisor/container environments
-		Leakless(false).        // Keep Chrome alive after CLI exits
+		Leakless(false).       // Keep Chrome alive after CLI exits
 		UserDataDir(dataDir).
 		Headless(headless)
+
+	l = configureExperiments(l)
 
 	// When in non-headless mode, make sure that we show the startup window immediately
 	// (instead of showing a window only after calling "rodney open")
