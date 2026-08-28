@@ -1,16 +1,16 @@
-# rodney assert: asserting JavaScript expressions
+# roddy assert: asserting JavaScript expressions
 
 *2026-02-17T21:46:40Z by Showboat 0.6.0*
 <!-- showboat-id: 6dd55f0e-350e-4323-9650-92bdf2739734 -->
 
-The new `rodney assert` command lets you assert JavaScript expressions directly from the command line. It supports two modes: **truthy mode** (one argument) checks that an expression evaluates to a truthy value, and **equality mode** (two arguments) checks that the result matches an expected string. Both modes use exit code 0 for pass and exit code 1 for failure, consistent with the other check commands (`exists`, `visible`, `ax-find`).
+The new `roddy assert` command lets you assert JavaScript expressions directly from the command line. It supports two modes: **truthy mode** (one argument) checks that an expression evaluates to a truthy value, and **equality mode** (two arguments) checks that the result matches an expected string. Both modes use exit code 0 for pass and exit code 1 for failure, consistent with the other check commands (`exists`, `visible`, `ax-find`).
 
 We will test against a small Starlette app (`demo_app.py` in this directory) that serves a task tracker page with a title, heading, task list, and login indicator. Start it with `uv run demo_app.py`.
 
 Start the browser and open the demo app.
 
 ```bash
-./rodney start 2>/dev/null | grep -v "^Auth proxy\|^Debug URL" && ./rodney open http://127.0.0.1:18092/
+./roddy start 2>/dev/null | grep -v "^Auth proxy\|^Debug URL" && ./roddy open http://127.0.0.1:18092/
 ```
 
 ```output
@@ -20,12 +20,12 @@ Task Tracker
 
 ## Truthy mode (one argument)
 
-With a single argument, `rodney assert` evaluates the JavaScript expression and exits 0 if the result is truthy, or exits 1 if falsy (false, 0, null, undefined, or empty string).
+With a single argument, `roddy assert` evaluates the JavaScript expression and exits 0 if the result is truthy, or exits 1 if falsy (false, 0, null, undefined, or empty string).
 
 Check that a `.logged-in` element exists on the page:
 
 ```bash
-./rodney assert "document.querySelector('.logged-in')" && echo "exit code: $?"
+./roddy assert "document.querySelector('.logged-in')" && echo "exit code: $?"
 ```
 
 ```output
@@ -36,7 +36,7 @@ exit code: 0
 A boolean expression evaluates to `true` which is truthy:
 
 ```bash
-./rodney assert "document.title === 'Task Tracker'" && echo "exit code: $?"
+./roddy assert "document.title === 'Task Tracker'" && echo "exit code: $?"
 ```
 
 ```output
@@ -49,7 +49,7 @@ When the expression evaluates to a falsy value — `null`, `false`, `0`, `undefi
 Query for a nonexistent element (returns `null`):
 
 ```bash
-./rodney assert "document.querySelector('.nonexistent')"; echo "exit code: $?"
+./roddy assert "document.querySelector('.nonexistent')"; echo "exit code: $?"
 ```
 
 ```output
@@ -60,7 +60,7 @@ exit code: 1
 A boolean `false`:
 
 ```bash
-./rodney assert "1 === 2"; echo "exit code: $?"
+./roddy assert "1 === 2"; echo "exit code: $?"
 ```
 
 ```output
@@ -70,12 +70,12 @@ exit code: 1
 
 ## Equality mode (two arguments)
 
-With two arguments, `rodney assert` evaluates the expression and compares its string representation to the expected value. The formatting matches what `rodney js` would output — strings are unquoted, numbers are plain digits.
+With two arguments, `roddy assert` evaluates the expression and compares its string representation to the expected value. The formatting matches what `roddy js` would output — strings are unquoted, numbers are plain digits.
 
 Check the page title:
 
 ```bash
-./rodney assert "document.title" "Task Tracker" && echo "exit code: $?"
+./roddy assert "document.title" "Task Tracker" && echo "exit code: $?"
 ```
 
 ```output
@@ -86,7 +86,7 @@ exit code: 0
 Count the number of tasks:
 
 ```bash
-./rodney assert "document.querySelectorAll('.task').length" "3" && echo "exit code: $?"
+./roddy assert "document.querySelectorAll('.task').length" "3" && echo "exit code: $?"
 ```
 
 ```output
@@ -97,7 +97,7 @@ exit code: 0
 Check the text content of the heading:
 
 ```bash
-./rodney assert "document.querySelector('h1').textContent" "Task Tracker" && echo "exit code: $?"
+./roddy assert "document.querySelector('h1').textContent" "Task Tracker" && echo "exit code: $?"
 ```
 
 ```output
@@ -108,7 +108,7 @@ exit code: 0
 Read a data attribute:
 
 ```bash
-./rodney assert "document.querySelector('.logged-in').dataset.user" "alice" && echo "exit code: $?"
+./roddy assert "document.querySelector('.logged-in').dataset.user" "alice" && echo "exit code: $?"
 ```
 
 ```output
@@ -119,7 +119,7 @@ exit code: 0
 When the values do not match, the failure message shows both the actual and expected values for easy debugging:
 
 ```bash
-./rodney assert "document.title" "Wrong Title"; echo "exit code: $?"
+./roddy assert "document.title" "Wrong Title"; echo "exit code: $?"
 ```
 
 ```output
@@ -128,7 +128,7 @@ exit code: 1
 ```
 
 ```bash
-./rodney assert "document.querySelectorAll('.task').length" "5"; echo "exit code: $?"
+./roddy assert "document.querySelectorAll('.task').length" "5"; echo "exit code: $?"
 ```
 
 ```output
@@ -141,7 +141,7 @@ exit code: 1
 Navigate to the About page and assert its title, then navigate back and re-check.
 
 ```bash
-./rodney open http://127.0.0.1:18092/about && ./rodney assert "document.title" "About - Task Tracker"
+./roddy open http://127.0.0.1:18092/about && ./roddy assert "document.title" "About - Task Tracker"
 ```
 
 ```output
@@ -150,7 +150,7 @@ pass
 ```
 
 ```bash
-./rodney back && ./rodney assert "document.title" "Task Tracker"
+./roddy back && ./roddy assert "document.title" "Task Tracker"
 ```
 
 ```output
@@ -163,7 +163,7 @@ pass
 The `--message` (or `-m`) flag adds a human-readable label to the failure output. The diagnostic details (actual vs expected) are still included in parentheses.
 
 ```bash
-./rodney assert "document.querySelector('.nonexistent')" -m "User should be logged in"; echo "exit code: $?"
+./roddy assert "document.querySelector('.nonexistent')" -m "User should be logged in"; echo "exit code: $?"
 ```
 
 ```output
@@ -172,7 +172,7 @@ exit code: 1
 ```
 
 ```bash
-./rodney assert "document.title" "Dashboard" --message "Wrong page loaded"; echo "exit code: $?"
+./roddy assert "document.title" "Dashboard" --message "Wrong page loaded"; echo "exit code: $?"
 ```
 
 ```output
@@ -183,7 +183,7 @@ exit code: 1
 When the assertion passes, the message is not shown — only "pass" is printed:
 
 ```bash
-./rodney assert "document.title" "Task Tracker" -m "Wrong page" && echo "exit code: $?"
+./roddy assert "document.title" "Task Tracker" -m "Wrong page" && echo "exit code: $?"
 ```
 
 ```output
@@ -202,16 +202,16 @@ check() {
 }
 
 # These pass
-check ./rodney exists "h1"
-check ./rodney visible "h1"
-check ./rodney assert "document.title" "Task Tracker" -m "Title should be Task Tracker"
-check ./rodney assert "document.querySelectorAll('.task').length" "3" -m "Should have 3 tasks"
-check ./rodney assert "document.querySelector('.logged-in').dataset.user" "alice" -m "Should be logged in as alice"
+check ./roddy exists "h1"
+check ./roddy visible "h1"
+check ./roddy assert "document.title" "Task Tracker" -m "Title should be Task Tracker"
+check ./roddy assert "document.querySelectorAll('.task').length" "3" -m "Should have 3 tasks"
+check ./roddy assert "document.querySelector('.logged-in').dataset.user" "alice" -m "Should be logged in as alice"
 
 # These fail
-check ./rodney assert "document.title" "Wrong Title" -m "Wrong page loaded"
-check ./rodney assert "document.querySelectorAll('.task').length" "10" -m "Expected 10 tasks"
-check ./rodney assert "document.querySelector('.nonexistent')" -m "Missing element"
+check ./roddy assert "document.title" "Wrong Title" -m "Wrong page loaded"
+check ./roddy assert "document.querySelectorAll('.task').length" "10" -m "Expected 10 tasks"
+check ./roddy assert "document.querySelector('.nonexistent')" -m "Missing element"
 
 if [ "$FAIL" -ne 0 ]; then
     echo "---"
@@ -240,7 +240,7 @@ The five passing checks ran silently, while the three failing checks printed sel
 Stop the browser.
 
 ```bash
-./rodney stop
+./roddy stop
 ```
 
 ```output

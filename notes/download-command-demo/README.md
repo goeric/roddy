@@ -1,8 +1,8 @@
-# Testing rodney download command
+# Testing roddy download command
 
 *2026-02-10T15:00:57Z*
 
-The most recent commit (d82a926) added `file` and `download` commands to rodney. The `download` command fetches the href or src target of an element and saves it to a file. It supports regular URLs, data: URLs, and can output to stdout with `-`. Let's exercise it.
+The most recent commit (d82a926) added `file` and `download` commands to roddy. The `download` command fetches the href or src target of an element and saves it to a file. It supports regular URLs, data: URLs, and can output to stdout with `-`. Let's exercise it.
 
 First, start a headless browser and create a small test page with various downloadable elements.
 
@@ -53,7 +53,7 @@ go run . download "#text-link" /tmp/downloaded.txt && cat /tmp/downloaded.txt
 
 ```output
 Saved /tmp/downloaded.txt (33 bytes)
-Hello from rodney download test!
+Hello from roddy download test!
 ```
 
 ## Download a data: URL
@@ -100,12 +100,12 @@ go run . download "#text-link" - | wc -c
 When no output file is specified, the download command infers a filename from the URL. Let's test that by downloading without specifying a filename.
 
 ```bash
-cd /tmp && /tmp/rodney download "#text-link" && cat /tmp/hello.txt
+cd /tmp && /tmp/roddy download "#text-link" && cat /tmp/hello.txt
 ```
 
 ```output
 Saved hello.txt (33 bytes)
-Hello from rodney download test!
+Hello from roddy download test!
 ```
 
 The filename `hello.txt` was inferred from the URL path `/hello.txt`. All download code paths work correctly.

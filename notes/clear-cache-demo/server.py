@@ -3,7 +3,7 @@
 
 The /data endpoint returns a random number with a long Cache-Control max-age,
 so a normal reload will keep showing the same value while a force reload
-(Shift+Refresh / rodney reload --hard) will fetch a fresh one.
+(Shift+Refresh / roddy reload --hard) will fetch a fresh one.
 """
 import http.server
 import random

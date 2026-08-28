@@ -1,8 +1,8 @@
-# Rodney Accessibility Testing Commands
+# Roddy Accessibility Testing Commands
 
 *2026-02-10T02:47:48Z*
 
-Rodney now includes three commands for accessibility testing, built on Chrome's Accessibility CDP domain. These let you inspect what assistive technologies see — without leaving the command line.
+Roddy now includes three commands for accessibility testing, built on Chrome's Accessibility CDP domain. These let you inspect what assistive technologies see — without leaving the command line.
 
 We'll demo against a sample bookstore page with navigation, a data table, forms, and disabled buttons.
 
@@ -11,7 +11,7 @@ We'll demo against a sample bookstore page with navigation, a data table, forms,
 Shows what a screen reader would see: roles, names, and properties in a hierarchical view. Use `--depth` to limit how deep you go.
 
 ```bash
-./rodney ax-tree --depth 3
+./roddy ax-tree --depth 3
 ```
 
 ```output
@@ -43,7 +43,7 @@ The full tree reveals structural landmarks (`banner`, `main`, `contentinfo`), AR
 Pass `--json` for machine-readable output suitable for `jq` pipelines.
 
 ```bash
-./rodney ax-tree --json | python3 -c "
+./roddy ax-tree --json | python3 -c "
 import json, sys
 nodes = json.load(sys.stdin)
 roles = {}
@@ -74,7 +74,7 @@ generic: 3
 Quickly locate elements by what assistive technologies call them, not by CSS selectors. Useful for CI assertions like "does this page have a button labeled X?"
 
 ```bash
-./rodney ax-find --role button
+./roddy ax-find --role button
 ```
 
 ```output
@@ -88,7 +88,7 @@ Quickly locate elements by what assistive technologies call them, not by CSS sel
 Combine `--name` and `--role` for precise queries:
 
 ```bash
-./rodney ax-find --role link --name "Cart"
+./roddy ax-find --role link --name "Cart"
 ```
 
 ```output
@@ -98,7 +98,7 @@ Combine `--name` and `--role` for precise queries:
 Find all landmarks/regions on the page:
 
 ```bash
-./rodney ax-find --role region
+./roddy ax-find --role region
 ```
 
 ```output
@@ -111,7 +111,7 @@ Find all landmarks/regions on the page:
 Point at a DOM element with a CSS selector and see its computed role, name, and all ARIA properties. Great for checking that a specific widget is correctly labeled.
 
 ```bash
-./rodney ax-node "#checkout-btn"
+./roddy ax-node "#checkout-btn"
 ```
 
 ```output
@@ -124,7 +124,7 @@ focusable: true
 Check the disabled button — its `disabled` property is visible:
 
 ```bash
-./rodney ax-node "#continue-btn"
+./roddy ax-node "#continue-btn"
 ```
 
 ```output
@@ -137,7 +137,7 @@ invalid: false
 Inspect a labeled input — the name is computed from the `<label>` element:
 
 ```bash
-./rodney ax-node "#promo"
+./roddy ax-node "#promo"
 ```
 
 ```output
@@ -156,7 +156,7 @@ labelledby: null
 Use `--json` for the full CDP node as JSON — useful for scripting assertions:
 
 ```bash
-./rodney ax-node "#checkout-btn" --json
+./roddy ax-node "#checkout-btn" --json
 ```
 
 ```output
@@ -230,7 +230,7 @@ Use `--json` for the full CDP node as JSON — useful for scripting assertions:
 All three commands compose with shell pipelines. Here's a quick check that every button on the page has an accessible name (not just an empty string):
 
 ```bash
-./rodney ax-find --role button --json | python3 -c "
+./roddy ax-find --role button --json | python3 -c "
 import json, sys
 buttons = json.load(sys.stdin)
 unnamed = [b for b in buttons if not b.get(\"name\", {}).get(\"value\")]

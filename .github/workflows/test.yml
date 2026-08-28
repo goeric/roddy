@@ -17,6 +17,6 @@ jobs:
         with:
           go-version: '1.24'
       - name: Build
-        run: go build -o rodney${{ matrix.os == 'windows-latest' && '.exe' || '' }} .
+        run: go build -o roddy${{ matrix.os == 'windows-latest' && '.exe' || '' }} .
       - name: Check version flag
-        run: ./rodney${{ matrix.os == 'windows-latest' && '.exe' || '' }} --version
+        run: ./roddy${{ matrix.os == 'windows-latest' && '.exe' || '' }} --version

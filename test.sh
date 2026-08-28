@@ -1,10 +1,10 @@
 #!/bin/bash
-# Integration test for rodney
+# Integration test for roddy
 set -e
 
 PASS=0
 FAIL=0
-CLI="./rodney"
+CLI="./roddy"
 
 pass() { echo "  PASS: $1"; PASS=$((PASS + 1)); }
 fail() { echo "  FAIL: $1 - got: $2"; FAIL=$((FAIL + 1)); }
@@ -33,7 +33,7 @@ assert_exit() {
     fi
 }
 
-echo "=== rodney integration tests ==="
+echo "=== roddy integration tests ==="
 echo ""
 
 # Start a test server

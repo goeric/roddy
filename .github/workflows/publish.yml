@@ -42,7 +42,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          binary=rodney
+          binary=roddy
           ext=""
           if [ "$GOOS" = "windows" ]; then
             ext=".exe"
@@ -73,12 +73,12 @@ jobs:
           set -euo pipefail
           uname -m
           version="${GITHUB_REF_NAME#v}"
-          dist_bin="dist/rodney-linux-amd64/rodney"
+          dist_bin="dist/roddy-linux-amd64/roddy"
           "$dist_bin" --version | grep -Fx "$version"
       - name: Upload build artifacts
         uses: actions/upload-artifact@v6
         with:
-          name: rodney-${{ matrix.goos }}-${{ matrix.goarch }}
+          name: roddy-${{ matrix.goos }}-${{ matrix.goarch }}
           path: |
             dist/*.tar.gz
             dist/*.zip
@@ -117,7 +117,7 @@ jobs:
           --description "Chrome automation from the command line" \
           --author 'Simon Willison' \
           --license Apache-2.0 \
-          --url https://github.com/simonw/rodney \
+          --url https://github.com/simonw/roddy \
           --set-version-var main.version \
           --version "$version"
     - name: Store the distribution packages

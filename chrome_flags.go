@@ -30,7 +30,7 @@ func singleProcessSupported() bool {
 // configureExperiments stops Chromium from running features that are still
 // being written.
 //
-// rodney's pinned browser (128.0.6568.0) is a development snapshot, and those
+// roddy's pinned browser (128.0.6568.0) is a development snapshot, and those
 // builds apply testing/variations/fieldtrial_testing_config.json by default,
 // which force-enables in-development features. One of them, HistoryEmbeddings,
 // computes passage embeddings on the browser's main thread after a navigation
@@ -42,9 +42,9 @@ func singleProcessSupported() bool {
 //
 // It needs the on-device model the optimization guide downloads, so it only
 // starts biting once a profile has been used for a while — a long-lived
-// ~/.rodney profile crashes where a throwaway one does not.
+// ~/.roddy profile crashes where a throwaway one does not.
 //
-// --disable-field-trial-config drops that config wholesale, so rodney drives a
+// --disable-field-trial-config drops that config wholesale, so roddy drives a
 // browser with shipped defaults rather than whatever happened to be mid-flight
 // when the snapshot was cut. HistoryEmbeddings is named explicitly as well
 // because a browser supplied through ROD_CHROME_BIN can enable it from a

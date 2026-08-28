@@ -1,4 +1,4 @@
-# rodney Development Notes
+# roddy Development Notes
 
 ## Environment
 - Go 1.24.7 on linux/amd64
@@ -59,20 +59,20 @@
 
 ### Architecture: CLI-per-command with shared Chrome
 Each CLI invocation is a short-lived process that:
-1. Reads `~/.rodney/state.json` for the Chrome debug URL
+1. Reads `~/.roddy/state.json` for the Chrome debug URL
 2. Connects to the running Chrome via WebSocket
 3. Executes the command on the active page
 4. Disconnects (without closing Chrome)
 
 This is much simpler than a daemon architecture while still providing statefulness.
 
-### State file (`~/.rodney/state.json`)
+### State file (`~/.roddy/state.json`)
 ```json
 {
   "debug_url": "ws://127.0.0.1:PORT/devtools/browser/UUID",
   "chrome_pid": 12345,
   "active_page": 0,
-  "data_dir": "/root/.rodney/chrome-data"
+  "data_dir": "/root/.roddy/chrome-data"
 }
 ```
 
@@ -99,7 +99,7 @@ This is much simpler than a daemon architecture while still providing statefulne
 - Chrome's `--proxy-server` flag doesn't support `user:pass@host:port`
 - CDP `Fetch` domain (HandleAuth) doesn't help - operates above the CONNECT tunnel layer
 - **Solution**: local forwarding proxy that injects `Proxy-Authorization` into CONNECT requests
-- The rodney binary acts as its own proxy helper via hidden `_proxy` subcommand
+- The roddy binary acts as its own proxy helper via hidden `_proxy` subcommand
 - Also needed `--ignore-certificate-errors` due to cert issues through the proxy
 - See `claude-code-chrome-proxy.md` for full details
 

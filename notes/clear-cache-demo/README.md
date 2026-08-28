@@ -1,6 +1,6 @@
-# Demonstrating rodney reload --hard and clear-cache
+# Demonstrating roddy reload --hard and clear-cache
 
-The `reload --hard` flag and `clear-cache` command give rodney users control over Chrome's browser cache. This demo uses a small Python HTTP server (`server.py`) that returns every response with `Cache-Control: public, max-age=3600` — the page includes a random number and a timestamp so we can see when Chrome actually fetches fresh content versus serving from cache.
+The `reload --hard` flag and `clear-cache` command give roddy users control over Chrome's browser cache. This demo uses a small Python HTTP server (`server.py`) that returns every response with `Cache-Control: public, max-age=3600` — the page includes a random number and a timestamp so we can see when Chrome actually fetches fresh content versus serving from cache.
 
 Start the caching server in the background and launch a headless browser with a clean profile.
 
@@ -14,7 +14,7 @@ Server started on port 9876
 ```
 
 ```bash
-rm -rf ~/.rodney/chrome-data  # start with empty disk cache
+rm -rf ~/.roddy/chrome-data  # start with empty disk cache
 go run . start 2>&1 | grep -v -E "Debug URL|PID|proxy" && go run . status 2>&1 | head -1
 ```
 
@@ -68,7 +68,7 @@ Value: 3904, Time: 19:20:02
 
 Same values — Chrome served the page from its disk cache without contacting the server.
 
-> **Note:** `rodney reload` (which calls `location.reload()` under the hood) does
+> **Note:** `roddy reload` (which calls `location.reload()` under the hood) does
 > *not* serve from cache — headless Chrome sends conditional requests on reload
 > even when max-age hasn't expired. Only navigation to a URL respects the disk
 > cache fully.

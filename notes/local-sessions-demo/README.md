@@ -3,28 +3,28 @@
 *2026-02-17T17:26:04Z by Showboat 0.6.0*
 <!-- showboat-id: 21fea7ad-568e-4b54-9ffd-55907cb69060 -->
 
-The most recent commit (01aaede) adds directory-scoped sessions to rodney via `--local` and `--global` flags. When started with `--local`, rodney stores its state in `./.rodney/` in the current directory instead of the global `~/.rodney/`. This means each directory gets its own isolated Chrome instance, cookies, localStorage, and state.
+The most recent commit (01aaede) adds directory-scoped sessions to roddy via `--local` and `--global` flags. When started with `--local`, roddy stores its state in `./.roddy/` in the current directory instead of the global `~/.roddy/`. This means each directory gets its own isolated Chrome instance, cookies, localStorage, and state.
 
 We'll demonstrate this with two separate directories, each visiting the same page but maintaining completely independent browser sessions.
 
 ## Setting up two local sessions
 
-Start a local rodney session in each of our two directories:
+Start a local roddy session in each of our two directories:
 
 First, build the development binary:
 
 ```bash
-cd ../.. && go build -o notes/local-sessions-demo/rodney . && echo "Built ./rodney"
+cd ../.. && go build -o notes/local-sessions-demo/roddy . && echo "Built ./roddy"
 ```
 
 ```output
-Built ./rodney
+Built ./roddy
 ```
 
-Start a local rodney session in each directory:
+Start a local roddy session in each directory:
 
 ```bash
-cd local-one && ../rodney start --local 2>&1
+cd local-one && ../roddy start --local 2>&1
 ```
 
 ```output
@@ -33,7 +33,7 @@ Debug URL: ws://127.0.0.1:65310/devtools/browser/a9ccf891-8cbe-41df-809b-e4709a1
 ```
 
 ```bash
-cd local-two && ../rodney start --local 2>&1
+cd local-two && ../roddy start --local 2>&1
 ```
 
 ```output
@@ -41,10 +41,10 @@ Chrome started (PID 81567)
 Debug URL: ws://127.0.0.1:65320/devtools/browser/2f49fd9c-c7b7-4d4b-9ee8-6df87bb737e4
 ```
 
-Each directory now has its own `.rodney/` folder with independent state and Chrome user data:
+Each directory now has its own `.roddy/` folder with independent state and Chrome user data:
 
 ```bash
-ls -lah local-one/.rodney/
+ls -lah local-one/.roddy/
 ```
 
 ```output
@@ -56,7 +56,7 @@ drwxr-xr-x@ 35 simon  staff   1.1K Feb 17 09:30 chrome-data
 ```
 
 ```bash
-ls -lah local-two/.rodney/
+ls -lah local-two/.roddy/
 ```
 
 ```output
@@ -72,7 +72,7 @@ drwxr-xr-x@ 35 simon  staff   1.1K Feb 17 09:30 chrome-data
 Navigate both browsers to the same word counter tool:
 
 ```bash
-cd local-one && ../rodney open https://tools.simonwillison.net/word-counter
+cd local-one && ../roddy open https://tools.simonwillison.net/word-counter
 ```
 
 ```output
@@ -80,7 +80,7 @@ Word & Character Counter
 ```
 
 ```bash
-cd local-two && ../rodney open https://tools.simonwillison.net/word-counter
+cd local-two && ../roddy open https://tools.simonwillison.net/word-counter
 ```
 
 ```output
@@ -106,7 +106,7 @@ local-two-initial.png
 Type different text into each browser to demonstrate they are independent:
 
 ```bash
-cd local-one && ../rodney click textarea && ../rodney input textarea "Hello from local-one\! This is the first isolated browser session running in its own directory."
+cd local-one && ../roddy click textarea && ../roddy input textarea "Hello from local-one\! This is the first isolated browser session running in its own directory."
 ```
 
 ```output
@@ -115,7 +115,7 @@ Typed: Hello from local-one\! This is the first isolated browser session running
 ```
 
 ```bash
-cd local-two && ../rodney click textarea && ../rodney input textarea "Greetings from local-two\! A completely separate Chrome instance with its own state."
+cd local-two && ../roddy click textarea && ../roddy input textarea "Greetings from local-two\! A completely separate Chrome instance with its own state."
 ```
 
 ```output
@@ -140,7 +140,7 @@ local-two-typed.png
 Stop both Chrome instances and restart them. The word counter stores text in localStorage, so if the per-directory Chrome data works correctly, each session should remember its own text:
 
 ```bash
-cd local-one && ../rodney stop
+cd local-one && ../roddy stop
 ```
 
 ```output
@@ -148,7 +148,7 @@ Chrome stopped
 ```
 
 ```bash
-cd local-two && ../rodney stop
+cd local-two && ../roddy stop
 ```
 
 ```output
@@ -156,7 +156,7 @@ Chrome stopped
 ```
 
 ```bash
-cd local-one && ../rodney start --local 2>&1
+cd local-one && ../roddy start --local 2>&1
 ```
 
 ```output
@@ -165,7 +165,7 @@ Debug URL: ws://127.0.0.1:49198/devtools/browser/444095c2-a6c8-4231-9e6c-da33838
 ```
 
 ```bash
-cd local-two && ../rodney start --local 2>&1
+cd local-two && ../roddy start --local 2>&1
 ```
 
 ```output
@@ -174,7 +174,7 @@ Debug URL: ws://127.0.0.1:49212/devtools/browser/4f5b7351-087e-4ebf-a453-b42e453
 ```
 
 ```bash
-cd local-one && ../rodney open https://tools.simonwillison.net/word-counter
+cd local-one && ../roddy open https://tools.simonwillison.net/word-counter
 ```
 
 ```output
@@ -182,7 +182,7 @@ Word & Character Counter
 ```
 
 ```bash
-cd local-two && ../rodney open https://tools.simonwillison.net/word-counter
+cd local-two && ../roddy open https://tools.simonwillison.net/word-counter
 ```
 
 ```output
@@ -210,7 +210,7 @@ local-two-after-restart.png
 Use JavaScript to read the localStorage values directly, confirming each session has its own independent storage:
 
 ```bash
-cd local-one && ../rodney js "JSON.stringify(Object.fromEntries(Object.entries(localStorage)), null, 2)"
+cd local-one && ../roddy js "JSON.stringify(Object.fromEntries(Object.entries(localStorage)), null, 2)"
 ```
 
 ```output
@@ -221,7 +221,7 @@ cd local-one && ../rodney js "JSON.stringify(Object.fromEntries(Object.entries(l
 ```
 
 ```bash
-cd local-two && ../rodney js "JSON.stringify(Object.fromEntries(Object.entries(localStorage)), null, 2)"
+cd local-two && ../roddy js "JSON.stringify(Object.fromEntries(Object.entries(localStorage)), null, 2)"
 ```
 
 ```output
@@ -236,7 +236,7 @@ Each session has its own `writing-sections` localStorage entry with different co
 ## Cleanup
 
 ```bash
-cd local-one && ../rodney stop
+cd local-one && ../roddy stop
 ```
 
 ```output
@@ -244,7 +244,7 @@ Chrome stopped
 ```
 
 ```bash
-cd local-two && ../rodney stop
+cd local-two && ../roddy stop
 ```
 
 ```output

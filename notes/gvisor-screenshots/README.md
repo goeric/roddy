@@ -2,11 +2,11 @@
 
 ## The Problem
 
-`rodney screenshot` crashed Chrome (Chromium 128) with an `EOF` error after ~27 seconds.
+`roddy screenshot` crashed Chrome (Chromium 128) with an `EOF` error after ~27 seconds.
 The Chrome process terminated during any `Page.captureScreenshot` CDP call, including
 the simplest possible variant (no viewport override, no full-page, tiny clip area).
 
-The `rodney pdf` command also failed: `{-32000 Printing failed}`.
+The `roddy pdf` command also failed: `{-32000 Printing failed}`.
 
 All other CDP operations (navigation, JS evaluation, DOM queries, clicking) worked fine.
 
@@ -117,13 +117,13 @@ l := launcher.New().
 - Some web features may behave differently
 
 For a CLI automation tool that controls one page at a time, these trade-offs
-are acceptable. The stability concern is mitigated by the fact that `rodney stop`
-and `rodney start` can quickly restart Chrome.
+are acceptable. The stability concern is mitigated by the fact that `roddy stop`
+and `roddy start` can quickly restart Chrome.
 
 ## Not applied on macOS
 
 The "a crash takes down the whole browser" trade-off turned out to be more than
-theoretical on macOS, so `rodney start` skips `--single-process` there
+theoretical on macOS, so `roddy start` skips `--single-process` there
 (`singleProcessSupported` in `chrome_flags.go`).
 
 `media/capture`'s Apple backend CHECKs that it owns a CFRunLoop-enabled thread,
@@ -139,8 +139,8 @@ Any page calling `navigator.mediaDevices.enumerateDevices()` triggers it, which
 the device-fingerprinting scripts on most commercial sites do:
 
 ```bash
-rodney open https://example.com/
-rodney js "navigator.mediaDevices.enumerateDevices().then(d=>d.length)"
+roddy open https://example.com/
+roddy js "navigator.mediaDevices.enumerateDevices().then(d=>d.length)"
 ```
 
 gVisor is a Linux sandbox, so nothing in this investigation is lost by skipping

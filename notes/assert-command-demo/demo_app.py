@@ -5,7 +5,7 @@
 #     "uvicorn",
 # ]
 # ///
-"""Tiny demo app for exercising `rodney assert`."""
+"""Tiny demo app for exercising `roddy assert`."""
 
 import uvicorn
 from starlette.applications import Starlette

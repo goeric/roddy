@@ -17,7 +17,7 @@ import (
 
 const testExtensionManifest = `{
   "manifest_version": 3,
-  "name": "Rodney Test Extension",
+  "name": "Roddy Test Extension",
   "version": "1.2.3",
   "content_scripts": [{"matches": ["<all_urls>"], "js": ["content.js"]}]
 }`
@@ -95,6 +95,11 @@ func TestExtensionID_MatchesChromeAlgorithm(t *testing.T) {
 	// Chrome derives an unpacked extension's ID from its absolute path. This
 	// expectation was captured by loading an extension from this exact path in
 	// a real Chrome session and reading back the id it assigned.
+	//
+	// The path keeps its pre-fork "rodney" spelling on purpose: the id is a
+	// hash of the path, so renaming the literal would invalidate the captured
+	// value, and recomputing it from our own implementation would make the
+	// test circular rather than a check against real Chrome.
 	got := extensionID("/private/tmp/rodney-test-extension")
 	want := "kpcblmbemcppaagejgmknhdmdmmnhcml"
 	if got != want {
@@ -199,7 +204,7 @@ func TestResolveExtension_Directory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if info.Name != "Rodney Test Extension" {
+	if info.Name != "Roddy Test Extension" {
 		t.Errorf("got name %q", info.Name)
 	}
 	if info.Version != "1.2.3" {
@@ -228,7 +233,7 @@ func TestResolveExtension_RelativeDirectoryBecomesAbsolute(t *testing.T) {
 }
 
 func TestResolveExtension_ResolvesSymlinks(t *testing.T) {
-	// Chrome derives the extension ID from the symlink-free path, so rodney has
+	// Chrome derives the extension ID from the symlink-free path, so roddy has
 	// to resolve links or it would report an ID Chrome never uses.
 	real := writeTestExtension(t, filepath.Join(t.TempDir(), "real"))
 	link := filepath.Join(t.TempDir(), "link")
@@ -297,7 +302,7 @@ func TestResolveExtension_Zip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if info.Name != "Rodney Test Extension" {
+	if info.Name != "Roddy Test Extension" {
 		t.Errorf("got name %q", info.Name)
 	}
 	if _, err := os.Stat(filepath.Join(info.Dir, "content.js")); err != nil {
@@ -538,7 +543,7 @@ func TestUnpackExtension_RejectsPathTraversal(t *testing.T) {
 // --- end to end ---
 
 // TestExtension_LoadsInHeadlessChrome is the test that matters: it launches a
-// headless browser the same way "rodney start --extension" does and checks the
+// headless browser the same way "roddy start --extension" does and checks the
 // extension's content script actually ran on a page.
 // baseLauncher mirrors the flags cmdStart sets before configureExtensions runs.
 func baseLauncher() *launcher.Launcher {

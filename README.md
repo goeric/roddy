@@ -1,27 +1,27 @@
-# Rodney: Chrome automation from the command line
+# Roddy: Chrome automation from the command line
 
-[![PyPI](https://img.shields.io/pypi/v/rodney.svg)](https://pypi.org/project/rodney/)
-[![Changelog](https://img.shields.io/github/v/release/simonw/rodney?include_prereleases&label=changelog)](https://github.com/simonw/rodney/releases)
-[![Tests](https://github.com/simonw/rodney/actions/workflows/test.yml/badge.svg)](https://github.com/simonw/rodney/actions/workflows/test.yml)
-[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/simonw/rodney/blob/main/LICENSE)
+[![PyPI](https://img.shields.io/pypi/v/roddy.svg)](https://pypi.org/project/roddy/)
+[![Changelog](https://img.shields.io/github/v/release/simonw/roddy?include_prereleases&label=changelog)](https://github.com/simonw/roddy/releases)
+[![Tests](https://github.com/simonw/roddy/actions/workflows/test.yml/badge.svg)](https://github.com/simonw/roddy/actions/workflows/test.yml)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/simonw/roddy/blob/main/LICENSE)
 
 A Go CLI tool that drives a persistent headless Chrome instance using the [rod](https://github.com/go-rod/rod) browser automation library. Each command connects to the same long-running Chrome process, making it easy to script multi-step browser interactions from shell scripts or interactive use.
 
 ## Architecture
 
 ```
-rodney start          →  launches Chrome (headless, persists after CLI exits)
-                          saves WebSocket debug URL to ~/.rodney/state.json
+roddy start          →  launches Chrome (headless, persists after CLI exits)
+                          saves WebSocket debug URL to ~/.roddy/state.json
 
-rodney connect H:P    →  connects to an existing Chrome on a remote debug port
-                          saves WebSocket debug URL to ~/.rodney/state.json
+roddy connect H:P    →  connects to an existing Chrome on a remote debug port
+                          saves WebSocket debug URL to ~/.roddy/state.json
 
-rodney open URL       →  connects to running Chrome via WebSocket
+roddy open URL       →  connects to running Chrome via WebSocket
                           navigates the active tab, disconnects
 
-rodney js EXPR        →  connects, evaluates JS, prints result, disconnects
+roddy js EXPR        →  connects, evaluates JS, prints result, disconnects
 
-rodney stop           →  connects and shuts down Chrome, cleans up state
+roddy stop           →  connects and shuts down Chrome, cleans up state
 ```
 
 Each CLI invocation is a short-lived process. Chrome runs independently and tabs persist between commands.
@@ -29,7 +29,7 @@ Each CLI invocation is a short-lived process. Chrome runs independently and tabs
 ## Building
 
 ```bash
-go build -o rodney .
+go build -o roddy .
 ```
 
 Requires:
@@ -41,12 +41,12 @@ Requires:
 ### Start/stop the browser
 
 ```bash
-rodney start              # Launch headless Chrome
-rodney start --show       # Launch with visible browser window
-rodney start --insecure   # Launch with TLS errors ignored (-k shorthand)
-rodney connect host:9222  # Connect to existing Chrome on remote debug port
-rodney status             # Show browser info and active page
-rodney stop               # Shut down Chrome
+roddy start              # Launch headless Chrome
+roddy start --show       # Launch with visible browser window
+roddy start --insecure   # Launch with TLS errors ignored (-k shorthand)
+roddy connect host:9222  # Connect to existing Chrome on remote debug port
+roddy status             # Show browser info and active page
+roddy stop               # Shut down Chrome
 ```
 
 ### Browser extensions
@@ -56,30 +56,30 @@ well as with `--show`:
 
 ```bash
 # An unpacked extension directory
-rodney start --extension ./my-extension
+roddy start --extension ./my-extension
 
 # A packed .crx or .zip, which is unpacked into the session directory
-rodney start --extension ./my-extension.crx
+roddy start --extension ./my-extension.crx
 
 # Repeat the flag to load more than one
-rodney start --extension ./one --extension ./two
+roddy start --extension ./one --extension ./two
 ```
 
-`rodney extensions` lists what was loaded, including the ID Chrome assigned to
+`roddy extensions` lists what was loaded, including the ID Chrome assigned to
 each one, which you need to reach pages served by the extension:
 
 ```bash
-rodney extensions
+roddy extensions
 # ldmakemplfmadpiihagnajidjbhnjlcm  My Extension  1.0.0  /path/to/my-extension
 
-rodney open chrome-extension://ldmakemplfmadpiihagnajidjbhnjlcm/popup.html
-rodney screenshot popup.png
+roddy open chrome-extension://ldmakemplfmadpiihagnajidjbhnjlcm/popup.html
+roddy screenshot popup.png
 ```
 
 Notes:
 
 - Extensions run in Chrome's [new headless
-  mode](https://developer.chrome.com/docs/chromium/new-headless), which rodney
+  mode](https://developer.chrome.com/docs/chromium/new-headless), which roddy
   switches to automatically when `--extension` is used — the old headless mode
   cannot run extensions at all.
 - Chrome only loads *unpacked* extensions from the command line, so a `.crx` is
@@ -91,35 +91,35 @@ Notes:
 ### Navigate
 
 ```bash
-rodney open https://example.com    # Navigate to URL
-rodney open example.com            # http:// prefix added automatically
-rodney back                        # Go back
-rodney forward                     # Go forward
-rodney reload                      # Reload page
-rodney reload --hard               # Reload bypassing cache
-rodney clear-cache                 # Clear the browser cache
+roddy open https://example.com    # Navigate to URL
+roddy open example.com            # http:// prefix added automatically
+roddy back                        # Go back
+roddy forward                     # Go forward
+roddy reload                      # Reload page
+roddy reload --hard               # Reload bypassing cache
+roddy clear-cache                 # Clear the browser cache
 ```
 
 ### Extract information
 
 ```bash
-rodney url                    # Print current URL
-rodney title                  # Print page title
-rodney text "h1"              # Print text content of element
-rodney html "div.content"     # Print outer HTML of element
-rodney html                   # Print full page HTML
-rodney attr "a#link" href     # Print attribute value
-rodney pdf output.pdf         # Save page as PDF
+roddy url                    # Print current URL
+roddy title                  # Print page title
+roddy text "h1"              # Print text content of element
+roddy html "div.content"     # Print outer HTML of element
+roddy html                   # Print full page HTML
+roddy attr "a#link" href     # Print attribute value
+roddy pdf output.pdf         # Save page as PDF
 ```
 
 ### Run JavaScript
 
 ```bash
-rodney js document.title                        # Evaluate expression
-rodney js "1 + 2"                               # Math
-rodney js 'document.querySelector("h1").textContent'  # DOM queries
-rodney js '[1,2,3].map(x => x * 2)'            # Returns pretty-printed JSON
-rodney js 'document.querySelectorAll("a").length'     # Count elements
+roddy js document.title                        # Evaluate expression
+roddy js "1 + 2"                               # Math
+roddy js 'document.querySelector("h1").textContent'  # DOM queries
+roddy js '[1,2,3].map(x => x * 2)'            # Returns pretty-printed JSON
+roddy js 'document.querySelectorAll("a").length'     # Count elements
 ```
 
 The expression is automatically wrapped in `() => { return (expr); }`.
@@ -127,79 +127,79 @@ The expression is automatically wrapped in `() => { return (expr); }`.
 ### Interact with elements
 
 ```bash
-rodney click "button#submit"       # Click element
-rodney input "#search" "query"     # Type into input field
-rodney clear "#search"             # Clear input field
-rodney file "#upload" photo.png    # Set file on a file input
-rodney file "#upload" -            # Set file from stdin
-rodney download "a.pdf-link"       # Download href/src target to file
-rodney download "a.pdf-link" -     # Download to stdout
-rodney select "#dropdown" "value"  # Select dropdown by value
-rodney submit "form#login"         # Submit a form
-rodney hover ".menu-item"          # Hover over element
-rodney focus "#email"              # Focus element
+roddy click "button#submit"       # Click element
+roddy input "#search" "query"     # Type into input field
+roddy clear "#search"             # Clear input field
+roddy file "#upload" photo.png    # Set file on a file input
+roddy file "#upload" -            # Set file from stdin
+roddy download "a.pdf-link"       # Download href/src target to file
+roddy download "a.pdf-link" -     # Download to stdout
+roddy select "#dropdown" "value"  # Select dropdown by value
+roddy submit "form#login"         # Submit a form
+roddy hover ".menu-item"          # Hover over element
+roddy focus "#email"              # Focus element
 ```
 
 ### Wait for conditions
 
 ```bash
-rodney wait ".loaded"       # Wait for element to appear and be visible
-rodney waitload             # Wait for page load event
-rodney waitstable           # Wait for DOM to stop changing
-rodney waitidle             # Wait for network to be idle
-rodney sleep 2.5            # Sleep for N seconds
+roddy wait ".loaded"       # Wait for element to appear and be visible
+roddy waitload             # Wait for page load event
+roddy waitstable           # Wait for DOM to stop changing
+roddy waitidle             # Wait for network to be idle
+roddy sleep 2.5            # Sleep for N seconds
 ```
 
 ### Screenshots
 
 ```bash
-rodney screenshot                         # Save as screenshot.png
-rodney screenshot page.png                # Save to specific file
-rodney screenshot -w 1280 -h 720 out.png  # Set viewport width/height
-rodney screenshot-el ".chart" chart.png   # Screenshot specific element
+roddy screenshot                         # Save as screenshot.png
+roddy screenshot page.png                # Save to specific file
+roddy screenshot -w 1280 -h 720 out.png  # Set viewport width/height
+roddy screenshot-el ".chart" chart.png   # Screenshot specific element
 ```
 
 ### Manage tabs
 
 ```bash
-rodney pages                    # List all tabs (* marks active)
-rodney newpage https://...      # Open URL in new tab
-rodney page 1                   # Switch to tab by index
-rodney closepage 1              # Close tab by index
-rodney closepage                # Close active tab
+roddy pages                    # List all tabs (* marks active)
+roddy newpage https://...      # Open URL in new tab
+roddy page 1                   # Switch to tab by index
+roddy closepage 1              # Close tab by index
+roddy closepage                # Close active tab
 ```
 
 ### Query elements
 
 ```bash
-rodney exists ".loading"    # Exit 0 if exists, exit 1 if not
-rodney count "li.item"      # Print number of matching elements
-rodney visible "#modal"     # Exit 0 if visible, exit 1 if not
-rodney assert 'document.title' 'Home'  # Exit 0 if equal, exit 1 if not
-rodney assert 'document.querySelector("h1") !== null'  # Exit 0 if truthy
+roddy exists ".loading"    # Exit 0 if exists, exit 1 if not
+roddy count "li.item"      # Print number of matching elements
+roddy visible "#modal"     # Exit 0 if visible, exit 1 if not
+roddy assert 'document.title' 'Home'  # Exit 0 if equal, exit 1 if not
+roddy assert 'document.querySelector("h1") !== null'  # Exit 0 if truthy
 ```
 
 ### Accessibility testing
 
 ```bash
-rodney ax-tree                           # Dump full accessibility tree
-rodney ax-tree --depth 3                 # Limit tree depth
-rodney ax-tree --json                    # Output as JSON
+roddy ax-tree                           # Dump full accessibility tree
+roddy ax-tree --depth 3                 # Limit tree depth
+roddy ax-tree --json                    # Output as JSON
 
-rodney ax-find --role button             # Find all buttons
-rodney ax-find --name "Submit"           # Find by accessible name
-rodney ax-find --role link --name "Home" # Combine filters
-rodney ax-find --role button --json      # Output as JSON
+roddy ax-find --role button             # Find all buttons
+roddy ax-find --name "Submit"           # Find by accessible name
+roddy ax-find --role link --name "Home" # Combine filters
+roddy ax-find --role button --json      # Output as JSON
 
-rodney ax-node "#submit-btn"             # Inspect element's a11y properties
-rodney ax-node "h1" --json               # Output as JSON
+roddy ax-node "#submit-btn"             # Inspect element's a11y properties
+roddy ax-node "h1" --json               # Output as JSON
 ```
 
 These commands use Chrome's [Accessibility CDP domain](https://chromedevtools.github.io/devtools-protocol/tot/Accessibility/) to expose what assistive technologies see. `ax-tree` uses `getFullAXTree`, `ax-find` uses `queryAXTree`, and `ax-node` uses `getPartialAXTree`.
 
 ```bash
 # CI check: verify all buttons have accessible names
-rodney ax-find --role button --json | python3 -c "
+roddy ax-find --role button --json | python3 -c "
 import json, sys
 buttons = json.load(sys.stdin)
 unnamed = [b for b in buttons if not b.get('name', {}).get('value')]
@@ -212,65 +212,65 @@ print(f'PASS: all {len(buttons)} buttons have accessible names')
 
 ### Directory-scoped sessions
 
-By default, Rodney stores state globally in `~/.rodney/`. You can instead create a session scoped to the current directory with `--local`:
+By default, Roddy stores state globally in `~/.roddy/`. You can instead create a session scoped to the current directory with `--local`:
 
 ```bash
-rodney start --local          # State stored in ./.rodney/state.json
-                              # Chrome data in ./.rodney/chrome-data/
-rodney open https://example.com   # Auto-detects local session
-rodney stop                       # Cleans up local session
+roddy start --local          # State stored in ./.roddy/state.json
+                              # Chrome data in ./.roddy/chrome-data/
+roddy open https://example.com   # Auto-detects local session
+roddy stop                       # Cleans up local session
 ```
 
 This is useful when you want isolated browser sessions per project — each directory gets its own Chrome instance, cookies, and state.
 
-**Auto-detection:** When neither `--local` nor `--global` is specified, Rodney checks for `./.rodney/state.json` in the current directory. If found, it uses the local session; otherwise it falls back to the global `~/.rodney/` session.
+**Auto-detection:** When neither `--local` nor `--global` is specified, Roddy checks for `./.roddy/state.json` in the current directory. If found, it uses the local session; otherwise it falls back to the global `~/.roddy/` session.
 
 ```bash
 # Force global even when a local session exists
-rodney --global open https://example.com
+roddy --global open https://example.com
 
 # Force local (errors if no local session)
-rodney --local status
+roddy --local status
 ```
 
 The `--local` and `--global` flags can appear anywhere in the command:
 
 ```bash
-rodney --local start
-rodney start --local          # Same effect
-rodney open --global https://example.com
+roddy --local start
+roddy start --local          # Same effect
+roddy open --global https://example.com
 ```
 
-Add `.rodney/` to your `.gitignore` to keep session state out of version control.
+Add `.roddy/` to your `.gitignore` to keep session state out of version control.
 
 ### Shell scripting examples
 
 ```bash
 # Wait for page to load and extract data
-rodney start
-rodney open https://example.com
-rodney waitstable
-title=$(rodney title)
+roddy start
+roddy open https://example.com
+roddy waitstable
+title=$(roddy title)
 echo "Page: $title"
 
 # Conditional logic based on element presence
-if rodney exists ".error-message"; then
-    rodney text ".error-message"
+if roddy exists ".error-message"; then
+    roddy text ".error-message"
 fi
 
 # Loop through pages
 for url in page1 page2 page3; do
-    rodney open "https://example.com/$url"
-    rodney waitstable
-    rodney screenshot "${url}.png"
+    roddy open "https://example.com/$url"
+    roddy waitstable
+    roddy screenshot "${url}.png"
 done
 
-rodney stop
+roddy stop
 ```
 
 ## Exit codes
 
-Rodney uses distinct exit codes to separate check failures from errors:
+Roddy uses distinct exit codes to separate check failures from errors:
 
 | Exit code | Meaning |
 |---|---|
@@ -280,37 +280,37 @@ Rodney uses distinct exit codes to separate check failures from errors:
 
 This makes it easy to distinguish between "the assertion is false" and "the command couldn't run" in scripts and CI pipelines.
 
-## Using Rodney for checks
+## Using Roddy for checks
 
 Several commands return **exit code 1** when a condition is not met, making them useful as assertions in shell scripts and CI pipelines. All of these print their result to stdout and exit cleanly — no error message is written to stderr.
 
 ### `exists` — check if an element exists in the DOM
 
 ```bash
-rodney exists "h1"
+roddy exists "h1"
 # Prints "true", exits 0
 
-rodney exists ".nonexistent"
+roddy exists ".nonexistent"
 # Prints "false", exits 1
 ```
 
 ### `visible` — check if an element is visible
 
 ```bash
-rodney visible "#modal"
+roddy visible "#modal"
 # Prints "true" and exits 0 if the element exists and is visible
 
-rodney visible "#hidden-div"
+roddy visible "#hidden-div"
 # Prints "false" and exits 1 if the element is hidden or doesn't exist
 ```
 
 ### `ax-find` — check for accessibility nodes
 
 ```bash
-rodney ax-find --role button --name "Submit"
+roddy ax-find --role button --name "Submit"
 # Prints the matching node(s), exits 0
 
-rodney ax-find --role banner --name "Nonexistent"
+roddy ax-find --role banner --name "Nonexistent"
 # Prints "No matching nodes" to stderr, exits 1
 ```
 
@@ -320,32 +320,32 @@ With one argument, checks that the expression is truthy. With two arguments, che
 
 ```bash
 # Truthy mode — check that expression evaluates to a truthy value
-rodney assert 'document.querySelector(".logged-in") !== null'
+roddy assert 'document.querySelector(".logged-in") !== null'
 # Prints "pass", exits 0
 
-rodney assert 'document.querySelector(".nonexistent")'
+roddy assert 'document.querySelector(".nonexistent")'
 # Prints "fail: got null", exits 1
 
 # Equality mode — check that expression result matches expected value
-rodney assert 'document.title' 'Dashboard'
+roddy assert 'document.title' 'Dashboard'
 # Prints "pass" if title is "Dashboard", exits 0
 
-rodney assert 'document.querySelectorAll(".item").length' '3'
+roddy assert 'document.querySelectorAll(".item").length' '3'
 # Prints "pass" if there are exactly 3 items, exits 0
 
-rodney assert 'document.title' 'Wrong Title'
+roddy assert 'document.title' 'Wrong Title'
 # Prints 'fail: got "Dashboard", expected "Wrong Title"', exits 1
 ```
 
-The expression is evaluated the same way as `rodney js` — the result is converted to its string representation before comparison. This means `rodney assert 'document.title' 'Dashboard'` compares the unquoted string, and `rodney assert '1 + 2' '3'` compares the number as a string.
+The expression is evaluated the same way as `roddy js` — the result is converted to its string representation before comparison. This means `roddy assert 'document.title' 'Dashboard'` compares the unquoted string, and `roddy assert '1 + 2' '3'` compares the number as a string.
 
 Use `--message` (or `-m`) to add a human-readable description to the failure output:
 
 ```bash
-rodney assert 'document.querySelector(".logged-in")' -m "User should be logged in"
+roddy assert 'document.querySelector(".logged-in")' -m "User should be logged in"
 # On failure: "fail: User should be logged in (got null)"
 
-rodney assert 'document.title' 'Dashboard' --message "Wrong page loaded"
+roddy assert 'document.title' 'Dashboard' --message "Wrong page loaded"
 # On failure: 'fail: Wrong page loaded (got "Home", expected "Dashboard")'
 ```
 
@@ -366,29 +366,29 @@ check() {
     fi
 }
 
-rodney start
-rodney open "https://example.com"
-rodney waitstable
+roddy start
+roddy open "https://example.com"
+roddy waitstable
 
 # Assert elements exist
-check rodney exists "h1"
-check rodney exists "nav"
-check rodney exists "footer"
+check roddy exists "h1"
+check roddy exists "nav"
+check roddy exists "footer"
 
 # Assert key elements are visible
-check rodney visible "h1"
-check rodney visible "#main-content"
+check roddy visible "h1"
+check roddy visible "#main-content"
 
 # Assert JS expressions
-check rodney assert 'document.title' 'Example Domain'
-check rodney assert 'document.querySelectorAll("p").length' '2'
-check rodney assert 'document.querySelector("h1") !== null'
+check roddy assert 'document.title' 'Example Domain'
+check roddy assert 'document.querySelectorAll("p").length' '2'
+check roddy assert 'document.querySelector("h1") !== null'
 
 # Assert accessibility requirements
-check rodney ax-find --role navigation
-check rodney ax-find --role heading --name "Example Domain"
+check roddy ax-find --role navigation
+check roddy ax-find --role heading --name "Example Domain"
 
-rodney stop
+roddy stop
 
 if [ "$FAIL" -ne 0 ]; then
     echo "Some checks failed"
@@ -397,28 +397,28 @@ fi
 echo "All checks passed"
 ```
 
-This pattern is useful in CI — run Rodney as a post-deploy check, an accessibility audit, or a smoke test against a staging environment. Because exit code 2 signals an actual error (e.g. Chrome didn't start), `set -e` will abort the script immediately if something is broken rather than reporting a misleading test failure.
+This pattern is useful in CI — run Roddy as a post-deploy check, an accessibility audit, or a smoke test against a staging environment. Because exit code 2 signals an actual error (e.g. Chrome didn't start), `set -e` will abort the script immediately if something is broken rather than reporting a misleading test failure.
 
 ## Configuration
 
 | Environment Variable | Default | Description |
 |---|---|---|
-| `RODNEY_HOME` | `~/.rodney` | Data directory for state and Chrome profile |
+| `RODDY_HOME` | `~/.roddy` | Data directory for state and Chrome profile |
 | `ROD_CHROME_BIN` | `/usr/bin/google-chrome` | Path to Chrome/Chromium binary |
 | `ROD_TIMEOUT` | `30` | Default timeout in seconds for element queries |
 | `HTTPS_PROXY` / `HTTP_PROXY` | (none) | Authenticated proxy auto-detected on start |
 
-Global state is stored in `~/.rodney/state.json` with Chrome user data in `~/.rodney/chrome-data/`. When using `--local`, state is stored in `./.rodney/state.json` and `./.rodney/chrome-data/` in the current directory instead. Set `RODNEY_HOME` to override the default global directory.
+Global state is stored in `~/.roddy/state.json` with Chrome user data in `~/.roddy/chrome-data/`. When using `--local`, state is stored in `./.roddy/state.json` and `./.roddy/chrome-data/` in the current directory instead. Set `RODDY_HOME` to override the default global directory.
 
 ## Proxy support
 
-In environments with authenticated HTTP proxies (e.g., `HTTPS_PROXY=http://user:pass@host:port`), `rodney start` automatically:
+In environments with authenticated HTTP proxies (e.g., `HTTPS_PROXY=http://user:pass@host:port`), `roddy start` automatically:
 
 1. Detects the proxy credentials from environment variables
 2. Launches a local forwarding proxy that injects `Proxy-Authorization` headers into CONNECT requests
 3. Configures Chrome to use the local proxy
 
-This is necessary because Chrome cannot natively authenticate to proxies during HTTPS tunnel (CONNECT) establishment. The local proxy runs as a background process and is automatically cleaned up by `rodney stop`.
+This is necessary because Chrome cannot natively authenticate to proxies during HTTPS tunnel (CONNECT) establishment. The local proxy runs as a background process and is automatically cleaned up by `roddy stop`.
 
 See [claude-code-chrome-proxy.md](claude-code-chrome-proxy.md) for detailed technical notes.
 
@@ -490,7 +490,7 @@ The tool uses the [rod](https://github.com/go-rod/rod) Go library which communic
 
 | Flag | Description |
 |---|---|
-| `--local` | Use directory-scoped session (`./.rodney/`) |
-| `--global` | Use global session (`~/.rodney/`) |
+| `--local` | Use directory-scoped session (`./.roddy/`) |
+| `--global` | Use global session (`~/.roddy/`) |
 | `--version` | Print version and exit |
 | `--help`, `-h`, `help` | Show help message |

@@ -38,7 +38,7 @@ func (e *extensionList) Set(v string) error {
 // new headless mode: https://developer.chrome.com/docs/chromium/new-headless
 //
 // New headless is the full browser stack — renderer, GPU, utility services and
-// the extension's own service worker — where rodney's --single-process becomes
+// the extension's own service worker — where roddy's --single-process becomes
 // dangerous: it collapses all of those into one OS process (measured: 0 child
 // processes and 205 threads, versus 10 and 59 without it), so any CHECK failure
 // or bad access anywhere takes down the entire browser rather than one renderer.
