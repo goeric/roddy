@@ -200,25 +200,29 @@ func evalInServiceWorker(browser *rod.Browser, sw swTarget, expr string) (gson.J
 		return gson.JSON{}, fmt.Errorf("evaluation failed: %w", err)
 	}
 	if res.ExceptionDetails != nil {
-		detail := res.ExceptionDetails.Text
-		// A thrown or rejected primitive carries no Description, only a Value —
-		// and null and undefined do not even have that. Without them the message
-		// is a bare "Uncaught (in promise)" with no reason at all.
-		if ex := res.ExceptionDetails.Exception; ex != nil {
-			switch {
-			case ex.Description != "":
-				detail = ex.Description
-			case !ex.Value.Nil():
-				detail = ex.Value.JSON("", "")
-			case ex.Subtype == proto.RuntimeRemoteObjectSubtypeNull:
-				detail = "null"
-			case ex.Type == proto.RuntimeRemoteObjectTypeUndefined:
-				detail = "undefined"
-			}
-		}
-		return gson.JSON{}, fmt.Errorf("JS error: %s", detail)
+		return gson.JSON{}, fmt.Errorf("JS error: %s", exceptionDetail(res.ExceptionDetails))
 	}
 	return remoteObjectValue(res.Result), nil
+}
+
+// exceptionDetail extracts the most useful description of a thrown value. A
+// thrown or rejected primitive carries no Description, only a Value — and null
+// and undefined do not even have that. Without them the message is a bare
+// "Uncaught (in promise)" with no reason at all.
+func exceptionDetail(d *proto.RuntimeExceptionDetails) string {
+	if ex := d.Exception; ex != nil {
+		switch {
+		case ex.Description != "":
+			return ex.Description
+		case !ex.Value.Nil():
+			return ex.Value.JSON("", "")
+		case ex.Subtype == proto.RuntimeRemoteObjectSubtypeNull:
+			return "null"
+		case ex.Type == proto.RuntimeRemoteObjectTypeUndefined:
+			return "undefined"
+		}
+	}
+	return d.Text
 }
 
 // cmdSW handles "roddy sw [list]" and "roddy sw eval <expr>". Flags may appear

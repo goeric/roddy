@@ -19,6 +19,13 @@ Browser lifecycle:
                                   for one worker per extension that declares
                                   one. The evaluation itself is bounded by
                                   ROD_TIMEOUT
+  roddy logs [--follow | -f]     Print the page's console output: Chrome
+                                  replays buffered messages, so output from
+                                  before the command ran is included. --follow
+                                  keeps streaming until interrupted. --sw
+                                  reads an extension service worker's console
+                                  instead (--ext ID picks one, --timeout DUR
+                                  bounds the worker wait)
 
 Navigation:
   roddy open <url>               Navigate to URL

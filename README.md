@@ -206,6 +206,31 @@ merely reproduces the computation to print the ID before launch — the ID is
 stable across runs, so `chrome-extension://` URLs can be hardcoded in test
 scripts instead of being discovered at runtime.
 
+### Console output
+
+`roddy logs` prints the console of the active page — including messages logged
+**before** the command ran, because Chrome replays its console buffer to each
+new debugging session. Uncaught exceptions (with stack traces) and
+browser-generated entries such as network failures are included.
+
+```bash
+roddy logs                  # snapshot: replayed console output, then exit
+roddy logs --follow         # keep streaming live output until Ctrl+C
+roddy logs --sw             # an extension service worker's console instead
+roddy logs --sw --ext ID    # pick one extension when several are loaded
+```
+
+A service worker has no DOM, so its console is often the only way to see what
+it did — `roddy logs --sw` right after `roddy start --extension` shows the
+worker's startup output.
+
+Notes:
+
+- Replayed object arguments print as `Object` — Chrome's buffer keeps only a
+  description. Live output under `--follow` shows a one-level preview like
+  `{a: 1, b: "x"}`.
+- A page with an empty console prints nothing and exits 0.
+
 ### Navigate
 
 ```bash
@@ -567,6 +592,7 @@ The tool uses the [rod](https://github.com/go-rod/rod) Go library which communic
 | `extensions` | | List extensions loaded into this session |
 | `sw` | `[list] [--ext ID] [--timeout DUR]` | List extension service workers, waiting up to `--timeout` for them (exit 1 if none are running) |
 | `sw eval` | `<expr> [--ext ID] [--timeout DUR]` | Evaluate JS inside an extension's service worker (the evaluation is bounded by `ROD_TIMEOUT`); flags may go either side of the expression |
+| `logs` | `[--follow\|-f] [--sw] [--ext ID] [--timeout DUR]` | Print console output (replayed + live) |
 | `open` | `<url>` | Navigate to URL |
 | `back` | | Go back in history |
 | `forward` | | Go forward in history |

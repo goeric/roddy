@@ -300,6 +300,8 @@ func main() {
 		cmdAXNode(args)
 	case "sw":
 		cmdSW(args)
+	case "logs":
+		cmdLogs(args)
 	case "help", "-h", "--help":
 		printUsage()
 		os.Exit(0)

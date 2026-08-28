@@ -53,6 +53,7 @@ func TestMain(m *testing.M) {
 	mux.HandleFunc("/empty", handleEmpty)
 	mux.HandleFunc("/sw-page", handleSWPage)
 	mux.HandleFunc("/page-sw.js", handlePageSW)
+	mux.HandleFunc("/logs-page", handleLogsPage)
 	server := httptest.NewServer(mux)
 
 	env = &testEnv{browser: browser, server: server}
@@ -1256,4 +1257,21 @@ func TestNormalizeOpenURL(t *testing.T) {
 			t.Errorf("normalizeOpenURL(%q) = %q, want %q", c.in, got, c.want)
 		}
 	}
+}
+
+// handleLogsPage serves a page that logs before any debugger attaches, so the
+// log-stream tests can prove Chrome replays buffered console output.
+func handleLogsPage(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html")
+	w.Write([]byte(`<!DOCTYPE html>
+<html lang="en">
+<head><title>Logs Page</title></head>
+<body>
+  <script>
+    console.log("fixture log", 7);
+    console.warn("fixture warning");
+    setTimeout(() => { throw new Error("fixture boom"); }, 50);
+  </script>
+</body>
+</html>`))
 }

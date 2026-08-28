@@ -88,6 +88,7 @@ roddy start --extension ./packed.crx              # or a .crx / .zip (unpacked a
 roddy start --extension ./one --extension ./two   # repeat for several
 roddy extensions                                  # list what's loaded, with IDs
 roddy sw eval '<js>'                              # run JS inside the background service worker
+roddy logs [--sw]                                 # console output, incl. messages from before
 ```
 
 ### Extensions in headless mode
@@ -141,6 +142,24 @@ that, as shown below.
 This is the backbone of extension e2e testing: seed state through the worker,
 drive the page, assert on both sides. For a WXT project the build output is the
 extension — `roddy start --extension .output/chrome-mv3`.
+
+### Reading console output
+
+`roddy logs` prints the console of the active page, and `roddy logs --sw` an
+extension service worker's — including output from **before** the command ran,
+because Chrome replays its console buffer to each new debugging session. This
+is the fastest way to see why a page or worker misbehaved after the fact:
+
+```bash
+roddy logs                   # what has this page logged? (errors include stacks)
+roddy logs --follow          # stream live output until interrupted
+roddy logs --sw              # what did the extension's worker log?
+```
+
+A worker's console is usually its only observability, so check `roddy logs --sw`
+before instrumenting anything. Replayed object arguments print as `Object`
+(Chrome's buffer keeps no preview); live output under `--follow` shows one-level
+previews.
 
 Alternatively, a worker also responds to messages sent from any extension page —
 and the message itself is an event, so this starts a suspended worker:

@@ -20,10 +20,11 @@ const swTestManifest = `{
   "permissions": ["storage"]
 }`
 
-// The worker sets a global and seeds storage, so tests can verify both plain
-// evaluation and that chrome.* APIs resolve inside the worker.
+// The worker sets a global, seeds storage, and logs, so tests can verify plain
+// evaluation, chrome.* APIs, and console replay from inside the worker.
 const swTestWorker = `self.SW_PROBE = "alive";
-chrome.storage.local.set({ seeded: "from-sw" });`
+chrome.storage.local.set({ seeded: "from-sw" });
+console.log("SW booted");`
 
 // writeSWTestExtension creates an unpacked MV3 extension with a service worker.
 func writeSWTestExtension(t *testing.T, dir string) string {
