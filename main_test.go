@@ -1234,3 +1234,26 @@ func TestInsecureFlag_WithSelfSignedCert(t *testing.T) {
 		}
 	})
 }
+
+// --- normalizeOpenURL ---
+
+func TestNormalizeOpenURL(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"example.com", "http://example.com"},
+		{"example.com/path?q=1", "http://example.com/path?q=1"},
+		{"localhost:3000", "http://localhost:3000"},
+		{"localhost:3000/app", "http://localhost:3000/app"},
+		{"https://example.com", "https://example.com"},
+		{"chrome-extension://abc/popup.html", "chrome-extension://abc/popup.html"},
+		{"data:text/html,<title>t</title>", "data:text/html,<title>t</title>"},
+		{"about:blank", "about:blank"},
+		{"javascript:void(0)", "javascript:void(0)"},
+		{"view-source:https://example.com", "view-source:https://example.com"},
+		{"blob:https://example.com/uuid", "blob:https://example.com/uuid"},
+	}
+	for _, c := range cases {
+		if got := normalizeOpenURL(c.in); got != c.want {
+			t.Errorf("normalizeOpenURL(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}

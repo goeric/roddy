@@ -642,15 +642,29 @@ func cmdStatus(args []string) {
 	}
 }
 
+// normalizeOpenURL prepends http:// to bare hostnames. A "://" test alone would
+// mangle authority-less schemes — "data:" and "about:blank" would become
+// http:// URLs Chrome rejects — but those schemes must be listed rather than
+// inferred from the colon, or "localhost:3000" would stop getting a scheme.
+func normalizeOpenURL(url string) string {
+	if strings.Contains(url, "://") {
+		return url
+	}
+	scheme, _, ok := strings.Cut(url, ":")
+	if ok {
+		switch strings.ToLower(scheme) {
+		case "data", "about", "javascript", "blob", "view-source", "chrome", "filesystem":
+			return url
+		}
+	}
+	return "http://" + url
+}
+
 func cmdOpen(args []string) {
 	if len(args) < 1 {
 		fatal("usage: roddy open <url>")
 	}
-	url := args[0]
-	// Add scheme if missing
-	if !strings.Contains(url, "://") {
-		url = "http://" + url
-	}
+	url := normalizeOpenURL(args[0])
 
 	s, err := loadState()
 	if err != nil {
@@ -665,7 +679,10 @@ func cmdOpen(args []string) {
 	pages, _ := browser.Pages()
 	var page *rod.Page
 	if len(pages) == 0 {
-		page = browser.MustPage(url)
+		page, err = browser.Page(proto.TargetCreateTarget{URL: url})
+		if err != nil {
+			fatal("navigation failed: %v", err)
+		}
 		s.ActivePage = 0
 		saveState(s)
 	} else {
@@ -677,7 +694,9 @@ func cmdOpen(args []string) {
 			fatal("navigation failed: %v", err)
 		}
 	}
-	page.MustWaitLoad()
+	if err := page.WaitLoad(); err != nil {
+		fatal("page did not finish loading: %v", err)
+	}
 	info, _ := page.Info()
 	if info != nil {
 		fmt.Println(info.Title)
