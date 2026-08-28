@@ -944,10 +944,10 @@ func TestFormatJSValue(t *testing.T) {
 		expr     string
 		expected string
 	}{
-		{`document.title`, "Test Page"},   // string unquoted
-		{`1 + 2`, "3"},                    // number
-		{`true`, "true"},                  // boolean
-		{`null`, "null"},                  // null
+		{`document.title`, "Test Page"}, // string unquoted
+		{`1 + 2`, "3"},                  // number
+		{`true`, "true"},                // boolean
+		{`null`, "null"},                // null
 		{`document.querySelectorAll("button").length`, "2"}, // number from DOM
 		{`0/0`, "NaN"},      // no JSON encoding; would print null
 		{`1/0`, "Infinity"}, // likewise

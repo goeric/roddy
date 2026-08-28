@@ -80,12 +80,12 @@ func resolveStateDir(mode scopeMode, workingDir string) string {
 
 // State persisted between CLI invocations
 type State struct {
-	DebugURL    string `json:"debug_url"`
-	ChromePID   int    `json:"chrome_pid"`
-	ActivePage  int    `json:"active_page"`  // index into pages list
-	DataDir     string `json:"data_dir"`
-	ProxyPID    int    `json:"proxy_pid,omitempty"`  // PID of auth proxy helper
-	ProxyPort   int    `json:"proxy_port,omitempty"` // local port of auth proxy
+	DebugURL   string `json:"debug_url"`
+	ChromePID  int    `json:"chrome_pid"`
+	ActivePage int    `json:"active_page"` // index into pages list
+	DataDir    string `json:"data_dir"`
+	ProxyPID   int    `json:"proxy_pid,omitempty"`  // PID of auth proxy helper
+	ProxyPort  int    `json:"proxy_port,omitempty"` // local port of auth proxy
 
 	Extensions []extensionInfo `json:"extensions,omitempty"` // extensions passed to --load-extension
 }
@@ -1721,7 +1721,7 @@ func queryAXNodes(page *rod.Page, name, role string) ([]*proto.AccessibilityAXNo
 	}
 
 	result, err := proto.AccessibilityQueryAXTree{
-		BackendNodeID: doc.Root.BackendNodeID,
+		BackendNodeID:  doc.Root.BackendNodeID,
 		AccessibleName: name,
 		Role:           role,
 	}.Call(page)
