@@ -155,6 +155,44 @@ Notes:
 - Only the extensions passed to `--extension` are enabled, and they stay loaded
   for the lifetime of the session.
 
+### Extension service workers
+
+An MV3 extension's logic lives in its background service worker, which has no
+DOM and is invisible to page-level commands. `roddy sw` reaches inside it:
+
+```bash
+roddy sw                    # list extension service workers
+# ldmakemplfmadpiihagnajidjbhnjlcm  chrome-extension://ldmakem…/sw.js
+
+# Evaluate in the worker's context — chrome.* APIs work, promises are awaited
+roddy sw eval 'chrome.storage.local.get(null)'
+roddy sw eval 'chrome.storage.local.set({flag: true}).then(() => "seeded")'
+roddy sw eval 'chrome.runtime.getManifest().version'
+```
+
+With several extensions loaded, pick one with `--ext ID` (flags go after
+`eval`). `sw eval` waits up to `--timeout` (default 5s) for the worker to
+appear, which covers the startup race after `roddy start`. It does not wake a
+worker Chrome has already suspended for idleness; poking an extension page or
+reloading a tab it listens to will.
+
+This makes end-to-end extension tests plain shell — seed storage through the
+worker, drive the page, assert on both sides:
+
+```bash
+# Testing a WXT project: build output is an unpacked MV3 extension
+roddy start --extension .output/chrome-mv3
+
+roddy sw eval 'chrome.storage.local.set({user: "test"}).then(() => "ok")'
+roddy open https://example.com
+roddy assert 'document.documentElement.dataset.myExtension' 'active'
+roddy sw eval 'chrome.storage.local.get("lastSeen").then(v => v.lastSeen)'
+```
+
+Because roddy derives extension IDs from the load path, the ID is stable across
+runs — `chrome-extension://` URLs can be hardcoded in test scripts instead of
+being discovered at runtime.
+
 ### Navigate
 
 ```bash
@@ -513,6 +551,9 @@ The tool uses the [rod](https://github.com/go-rod/rod) Go library which communic
 | `connect` | `<host:port>` | Connect to existing Chrome on remote debug port |
 | `stop` | | Shut down Chrome |
 | `status` | | Show browser status |
+| `extensions` | | List extensions loaded into this session |
+| `sw` | `[--ext ID]` | List extension service workers |
+| `sw eval` | `[--ext ID] [--timeout DUR] <expr>` | Evaluate JS inside an extension's service worker |
 | `open` | `<url>` | Navigate to URL |
 | `back` | | Go back in history |
 | `forward` | | Go forward in history |

@@ -87,6 +87,7 @@ roddy start --extension ./my-extension            # unpacked directory
 roddy start --extension ./packed.crx              # or a .crx / .zip (unpacked automatically)
 roddy start --extension ./one --extension ./two   # repeat for several
 roddy extensions                                  # list what's loaded, with IDs
+roddy sw eval '<js>'                              # run JS inside the background service worker
 ```
 
 ### Extensions in headless mode
@@ -115,8 +116,29 @@ ps -ww -o command= -p "$(roddy status | sed -n 's/.*PID \([0-9]*\).*/\1/p')" \
   | tr ' ' '\n' | grep -- --headless      # "--headless=new" when an extension is loaded
 ```
 
-Testing an extension's runtime — the service worker responds to messages sent
-from any extension page, so a round trip is one command:
+### Reaching the service worker directly
+
+`roddy sw` evaluates JS **inside** an MV3 extension's background service
+worker — the context where `chrome.*` APIs live and the extension's real state
+sits. Promises are awaited:
+
+```bash
+roddy sw                                                  # list workers: ID + sw.js URL
+roddy sw eval 'chrome.storage.local.get(null)'            # read all extension storage
+roddy sw eval 'chrome.storage.local.set({user:"t"}).then(() => "seeded")'
+roddy sw eval 'chrome.runtime.getManifest().version'
+```
+
+With several extensions loaded, disambiguate with `--ext ID` (flags go after
+`eval`). `sw eval` waits up to `--timeout` (default 5s) for the worker to
+appear after `start`; it cannot wake a worker Chrome suspended for idleness —
+open one of the extension's pages to wake it.
+
+This is the backbone of extension e2e testing: seed state through the worker,
+drive the page, assert on both sides. For a WXT project the build output is the
+extension — `roddy start --extension .output/chrome-mv3`.
+
+Alternatively, a worker also responds to messages sent from any extension page:
 
 ```bash
 ID=$(roddy extensions | awk '{print $1}')
@@ -124,9 +146,9 @@ roddy open "chrome-extension://$ID/popup.html"
 roddy js "chrome.runtime.sendMessage({type:'ping'})"     # returns the worker's reply
 ```
 
-`chrome.*` APIs are only available on `chrome-extension://` pages, not on
-ordinary sites — from a normal page you can only observe what the content
-script did to the DOM.
+On ordinary sites `chrome.*` is unavailable to `roddy js` — from a normal page
+you can only observe what the content script did to the DOM; use `roddy sw
+eval` for everything behind the scenes.
 
 To reach a page served by the extension you need the ID Chrome assigned it,
 which `roddy extensions` prints as the first column:

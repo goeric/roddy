@@ -22,6 +22,7 @@ import (
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/proto"
+	"github.com/ysmood/gson"
 )
 
 //go:embed help.txt
@@ -297,6 +298,8 @@ func main() {
 		cmdAXFind(args)
 	case "ax-node":
 		cmdAXNode(args)
+	case "sw":
+		cmdSW(args)
 	case "help", "-h", "--help":
 		printUsage()
 		os.Exit(0)
@@ -838,10 +841,13 @@ func cmdJS(args []string) {
 	if err != nil {
 		fatal("JS error: %v", err)
 	}
-	// Print the value based on its JSON type
-	v := result.Value
+	printJSValue(result.Value)
+}
+
+// printJSValue prints an evaluation result based on its JSON type: simple
+// types cleanly, objects and arrays pretty-printed.
+func printJSValue(v gson.JSON) {
 	raw := v.JSON("", "")
-	// For simple types, print cleanly; for objects/arrays, pretty-print
 	switch {
 	case raw == "null" || raw == "undefined":
 		fmt.Println(raw)

@@ -9,6 +9,12 @@ Browser lifecycle:
   roddy stop                     Shut down Chrome
   roddy status                   Show browser status
   roddy extensions               List extensions loaded into this session
+  roddy sw                       List extension service workers
+  roddy sw eval <expr>           Evaluate JS inside an extension's service
+                                  worker; promises are awaited. Flags after
+                                  eval: --ext ID picks one extension when
+                                  several are loaded, --timeout DUR (default
+                                  5s) bounds the wait for a worker to appear
 
 Navigation:
   roddy open <url>               Navigate to URL
