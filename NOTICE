@@ -1,0 +1,47 @@
+Roddy
+Copyright 2026 Eric Posen
+
+This product includes software developed as Rodney
+(https://github.com/simonw/rodney), Copyright Simon Willison and the
+Rodney contributors, licensed under the Apache License, Version 2.0.
+
+Roddy is a fork of Rodney. It is not endorsed by or affiliated with the
+Rodney project or its authors.
+
+MODIFICATIONS
+=============
+
+Roddy was forked from Rodney at commit a842432 ("Migrate command arg
+parsing from hand-rolled loops to flag.FlagSet", 2026-03-12). The
+following files have been changed from their original Rodney versions:
+
+  main.go            Extension loading, target activation before capture,
+                     crash-avoidance flags, roddy renaming
+  main_test.go       Tests for the above; roddy renaming
+  help.txt           Documented --extension and the extensions command;
+                     roddy renaming
+  README.md          Fork notice, migration guide, install instructions,
+                     updated badges; roddy renaming
+  notes.md           Roddy renaming
+  test.sh            Roddy renaming
+  go.mod             Module path changed to github.com/goeric/roddy
+  .gitignore         Roddy renaming
+  .github/workflows/publish.yml
+                     Removed PyPI wheel-building and publishing jobs;
+                     roddy renaming
+  .github/workflows/test.yml
+                     Roddy renaming
+  notes/**           Roddy renaming in documentation and demos
+
+The following files are new in Roddy and are not part of Rodney:
+
+  extensions.go, extensions_test.go
+  chrome_flags.go, chrome_flags_test.go
+  capture_test.go
+  notes/gvisor-screenshots/
+  NOTICE
+
+Throughout, "rodney" has been renamed to "roddy" — this includes the
+binary name, the state directory (~/.rodney/ became ~/.roddy/), and the
+RODNEY_HOME environment variable (now RODDY_HOME). Roddy does not read
+Rodney's state files.

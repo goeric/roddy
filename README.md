@@ -1,11 +1,49 @@
 # Roddy: Chrome automation from the command line
 
-[![PyPI](https://img.shields.io/pypi/v/roddy.svg)](https://pypi.org/project/roddy/)
-[![Changelog](https://img.shields.io/github/v/release/simonw/roddy?include_prereleases&label=changelog)](https://github.com/simonw/roddy/releases)
-[![Tests](https://github.com/simonw/roddy/actions/workflows/test.yml/badge.svg)](https://github.com/simonw/roddy/actions/workflows/test.yml)
-[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/simonw/roddy/blob/main/LICENSE)
+[![Tests](https://github.com/goeric/roddy/actions/workflows/test.yml/badge.svg)](https://github.com/goeric/roddy/actions/workflows/test.yml)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/goeric/roddy/blob/main/LICENSE)
 
 A Go CLI tool that drives a persistent headless Chrome instance using the [rod](https://github.com/go-rod/rod) browser automation library. Each command connects to the same long-running Chrome process, making it easy to script multi-step browser interactions from shell scripts or interactive use.
+
+## About this fork
+
+Roddy is a fork of [simonw/rodney](https://github.com/simonw/rodney) by Simon Willison, created because upstream development stalled. The last upstream commit was in March 2026, and pull requests — including several fixing crashes we hit daily — have sat unreviewed since February 2026.
+
+This fork exists to keep those fixes available and installable. It is not a hostile fork: upstream pull requests are still open, and if Rodney resumes active development we would be glad to see this work land there instead.
+
+### What Roddy adds over upstream
+
+- **`--extension` flag** — load unpacked extension directories or packed `.crx`/`.zip` archives into a headless session, and list them with `roddy extensions`. ([upstream PR #52](https://github.com/simonw/rodney/pull/52))
+- **Browser-process crash fixes** — stops Chromium running in-development features that abort the browser, and skips `--single-process` on macOS where it crashes on startup. ([upstream PR #54](https://github.com/simonw/rodney/pull/54))
+- **Screenshot reliability** — raises the target before capturing, fixing captures that timed out when the page was not in the foreground. ([upstream PR #55](https://github.com/simonw/rodney/pull/55))
+
+### Migrating from Rodney
+
+The command, state directory, and environment variable are all renamed:
+
+| Rodney | Roddy |
+| --- | --- |
+| `rodney` | `roddy` |
+| `~/.rodney/`, `./.rodney/` | `~/.roddy/`, `./.roddy/` |
+| `RODNEY_HOME` | `RODDY_HOME` |
+
+Roddy does not read Rodney's state files. Run `rodney stop` before switching so the old browser process is shut down cleanly rather than orphaned; otherwise the commands and flags are unchanged.
+
+## Installing
+
+```bash
+go install github.com/goeric/roddy@latest
+```
+
+Or build from a checkout:
+
+```bash
+go build -o roddy .
+```
+
+Requires:
+- Go 1.21+
+- Google Chrome or Chromium installed (or set `ROD_CHROME_BIN=/path/to/chrome`)
 
 ## Architecture
 
@@ -25,16 +63,6 @@ roddy stop           →  connects and shuts down Chrome, cleans up state
 ```
 
 Each CLI invocation is a short-lived process. Chrome runs independently and tabs persist between commands.
-
-## Building
-
-```bash
-go build -o roddy .
-```
-
-Requires:
-- Go 1.21+
-- Google Chrome or Chromium installed (or set `ROD_CHROME_BIN=/path/to/chrome`)
 
 ## Usage
 
