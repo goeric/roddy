@@ -109,25 +109,53 @@ func waitServiceWorker(browser *rod.Browser, extID string, timeout time.Duration
 	return swTarget{}, fmt.Errorf("no extension service worker%s (it may not have started, or Chrome suspended it after idle)", suffix)
 }
 
+// swCandidates narrows the loaded extensions to those that declare a service
+// worker, since a content-script-only extension (or an MV2 background page)
+// never produces one: counting it would make list wait out its whole timeout
+// and make eval demand an --ext naming something that can never be the target.
+// State written before roddy recorded the flag reports it false for everything,
+// so an all-false set means "not known" and every extension stays a candidate;
+// known says which of the two it is.
+func swCandidates(extensions []extensionInfo) (candidates []extensionInfo, known bool) {
+	for _, e := range extensions {
+		if e.HasWorker {
+			candidates = append(candidates, e)
+		}
+	}
+	if len(candidates) == 0 {
+		return extensions, false
+	}
+	return candidates, true
+}
+
 // checkExtensionFilter validates --ext against the extensions this session
-// loaded. mustChoose also rejects an omitted --ext when several are loaded:
-// eval would otherwise land in whichever worker happened to be running. A
-// session made by "roddy connect" records no extensions, so both checks stay
-// quiet there and waitServiceWorker's multiple-workers error is the backstop.
+// loaded. mustChoose also rejects an omitted --ext when several of them could
+// have a worker: eval would otherwise land in whichever one happened to be
+// running. A session made by "roddy connect" records no extensions, so every
+// check stays quiet there and waitServiceWorker's multiple-workers error is the
+// backstop.
 func checkExtensionFilter(extensions []extensionInfo, extID string, mustChoose bool) error {
 	if len(extensions) == 0 {
 		return nil
 	}
+	candidates, known := swCandidates(extensions)
 	if extID == "" {
-		if mustChoose && len(extensions) > 1 {
-			return fmt.Errorf("several extensions are loaded; pick one with --ext:\n%s", extensionLines(extensions))
+		if mustChoose && len(candidates) > 1 {
+			return fmt.Errorf("several extensions are loaded; pick one with --ext:\n%s", extensionLines(candidates))
 		}
 		return nil
 	}
+	// The name check runs against every loaded extension: filtering to one that
+	// cannot have a worker is a different mistake from naming one that is not
+	// loaded at all, and deserves to be told apart.
 	for _, e := range extensions {
-		if e.ID == extID {
-			return nil
+		if e.ID != extID {
+			continue
 		}
+		if known && !e.HasWorker {
+			return fmt.Errorf("extension %s (%s) declares no service worker", extID, e.Name)
+		}
+		return nil
 	}
 	return fmt.Errorf("extension %s is not loaded; this session has:\n%s", extID, extensionLines(extensions))
 }
@@ -150,7 +178,7 @@ func evalInServiceWorker(browser *rod.Browser, sw swTarget, expr string) (gson.J
 	}
 	// An attached debugger pins the worker's idle-suspension clock, so detaching
 	// matters if this is ever called repeatedly within one process.
-	defer proto.TargetDetachFromTarget{SessionID: att.SessionID}.Call(browser)
+	defer func() { _ = proto.TargetDetachFromTarget{SessionID: att.SessionID}.Call(browser) }()
 
 	// The deadline goes on the browser clone rather than the session page: rod
 	// builds a PageFromSession by hand and leaves its helpersLock nil, so
@@ -169,42 +197,48 @@ func evalInServiceWorker(browser *rod.Browser, sw swTarget, expr string) (gson.J
 		if errors.Is(err, context.DeadlineExceeded) {
 			return gson.JSON{}, fmt.Errorf("evaluation timed out after %s (does the promise ever settle?); ROD_TIMEOUT raises the limit", defaultTimeout)
 		}
-		return gson.JSON{}, err
+		return gson.JSON{}, fmt.Errorf("evaluation failed: %w", err)
 	}
 	if res.ExceptionDetails != nil {
 		detail := res.ExceptionDetails.Text
+		// A thrown or rejected primitive carries no Description, only a Value —
+		// and null and undefined do not even have that. Without them the message
+		// is a bare "Uncaught (in promise)" with no reason at all.
 		if ex := res.ExceptionDetails.Exception; ex != nil {
-			// A thrown or rejected primitive carries no Description, only a
-			// Value; without it the message is a bare "Uncaught (in promise)".
-			if ex.Description != "" {
+			switch {
+			case ex.Description != "":
 				detail = ex.Description
-			} else if !ex.Value.Nil() {
+			case !ex.Value.Nil():
 				detail = ex.Value.JSON("", "")
+			case ex.Subtype == proto.RuntimeRemoteObjectSubtypeNull:
+				detail = "null"
+			case ex.Type == proto.RuntimeRemoteObjectTypeUndefined:
+				detail = "undefined"
 			}
 		}
 		return gson.JSON{}, fmt.Errorf("JS error: %s", detail)
 	}
-	// NaN, ±Infinity and -0 cannot be JSON-encoded, so Chrome spells them here
-	// and leaves Value empty, which would otherwise print as null.
-	if res.Result.UnserializableValue != "" {
-		return gson.New(string(res.Result.UnserializableValue)), nil
-	}
-	return res.Result.Value, nil
+	return remoteObjectValue(res.Result), nil
 }
 
 // cmdSW handles "roddy sw [list]" and "roddy sw eval <expr>". Flags may appear
 // anywhere, and every argument check runs before the browser is touched.
 func cmdSW(args []string) {
-	usage := swUsage(args)
 	ext, timeout, rest, err := parseSWFlags(args)
 	if err != nil {
-		fatal("%v\n%s", err, usage)
+		// The subcommand is only trustworthy once the flags are out of the way,
+		// so a parse error reports the more general usage.
+		fatal("%v\n%s", err, swListUsage)
 	}
 
 	sub := "list"
 	if len(rest) > 0 && (rest[0] == "list" || rest[0] == "eval") {
 		sub = rest[0]
 		rest = rest[1:]
+	}
+	usage := swListUsage
+	if sub == "eval" {
+		usage = swEvalUsage
 	}
 	expr := strings.Join(rest, " ")
 	if sub == "eval" {
@@ -243,11 +277,11 @@ func cmdSW(args []string) {
 		return
 	}
 
-	// Every loaded extension should end up with a worker, so wait for the full
-	// set rather than printing whichever one won the startup race.
+	// Every extension that declares a worker should end up with one, so wait for
+	// the full set rather than printing whichever one won the startup race.
 	want := 1
-	if ext == "" && len(s.Extensions) > 1 {
-		want = len(s.Extensions)
+	if candidates, _ := swCandidates(s.Extensions); ext == "" && len(candidates) > 1 {
+		want = len(candidates)
 	}
 	workers, err := waitServiceWorkers(browser, ext, want, timeout)
 	if err != nil {
@@ -261,19 +295,9 @@ func cmdSW(args []string) {
 		fmt.Printf("%s  %s\n", w.ExtensionID, w.URL)
 	}
 	if len(workers) < want {
-		fmt.Fprintf(os.Stderr, "(%d of %d extension workers running; the rest may be suspended or not started)\n",
+		fmt.Fprintf(os.Stderr, "(%d of %d extension service workers running; the rest may be suspended or not started)\n",
 			len(workers), want)
 	}
-}
-
-// swUsage picks the usage line for the subcommand named in args.
-func swUsage(args []string) string {
-	for _, a := range args {
-		if a == "eval" {
-			return swEvalUsage
-		}
-	}
-	return swListUsage
 }
 
 // parseSWFlags pulls --ext and --timeout out of args wherever they appear, the
@@ -283,6 +307,11 @@ func swUsage(args []string) string {
 func parseSWFlags(args []string) (ext string, timeout time.Duration, rest []string, err error) {
 	timeout = 5 * time.Second
 	for i := 0; i < len(args); i++ {
+		// "--" ends the flags: without it an expression like "--x" would be a
+		// pre-decrement that silently mutates a global inside the worker.
+		if args[i] == "--" {
+			return ext, timeout, append(rest, args[i+1:]...), nil
+		}
 		name, value, inline := strings.Cut(args[i], "=")
 		switch name {
 		case "--ext", "-ext", "--timeout", "-timeout":
@@ -298,6 +327,11 @@ func parseSWFlags(args []string) (ext string, timeout time.Duration, rest []stri
 			value = args[i]
 		}
 		if strings.HasSuffix(name, "ext") {
+			// An unset shell variable would otherwise read as "no filter" and
+			// quietly evaluate in whichever extension turned up.
+			if value == "" {
+				return "", 0, nil, fmt.Errorf("flag %s needs a non-empty value", name)
+			}
 			ext = value
 			continue
 		}

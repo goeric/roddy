@@ -130,10 +130,11 @@ roddy sw eval 'chrome.runtime.getManifest().version'
 ```
 
 With several extensions loaded, disambiguate with `--ext ID` — `sw eval`
-refuses to guess. Flags may appear anywhere, before or after the expression.
-Both forms wait up to `--timeout` (default 5s) for workers to appear after
-`start`, and `roddy sw` exits 1 if none are running; the evaluation itself is
-bounded by `ROD_TIMEOUT` (default 30s). Neither wakes a worker Chrome suspended
+refuses to guess, though only extensions declaring a `background.service_worker`
+count. Flags may appear anywhere, before or after the expression. Both forms
+wait up to `--timeout` (default 5s) for the workers to appear after `start` —
+one per extension that declares one — and `roddy sw` exits 1 if none are
+running; the evaluation itself is bounded by `ROD_TIMEOUT` (default 30s). Neither wakes a worker Chrome suspended
 for idleness — send it a message to do that, as shown below.
 
 This is the backbone of extension e2e testing: seed state through the worker,

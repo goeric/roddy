@@ -16,8 +16,9 @@ Browser lifecycle:
                                   Flags for both, in any position: --ext ID
                                   picks one extension when several are loaded,
                                   --timeout DUR (default 5s) bounds the wait
-                                  for the workers to appear. The evaluation
-                                  itself is bounded by ROD_TIMEOUT
+                                  for one worker per extension that declares
+                                  one. The evaluation itself is bounded by
+                                  ROD_TIMEOUT
 
 Navigation:
   roddy open <url>               Navigate to URL

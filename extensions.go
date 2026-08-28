@@ -63,16 +63,22 @@ func configureExtensions(l *launcher.Launcher, headless bool, extensions []exten
 
 // manifest is the subset of manifest.json we care about.
 type manifest struct {
-	Name    string `json:"name"`
-	Version string `json:"version"`
+	Name       string `json:"name"`
+	Version    string `json:"version"`
+	Background struct {
+		// Only MV3's service_worker starts a worker; an MV2 background page or
+		// a content-script-only extension never produces one.
+		ServiceWorker string `json:"service_worker"`
+	} `json:"background"`
 }
 
 // extensionInfo describes one extension that was handed to Chrome.
 type extensionInfo struct {
-	ID      string `json:"id"`
-	Name    string `json:"name"`
-	Version string `json:"version"`
-	Dir     string `json:"dir"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Version   string `json:"version"`
+	Dir       string `json:"dir"`
+	HasWorker bool   `json:"has_worker,omitempty"` // declares background.service_worker
 }
 
 // extensionID computes the ID Chrome assigns to an unpacked extension, which is
@@ -170,7 +176,13 @@ func resolveExtension(path, unpackRoot string) (extensionInfo, error) {
 	if err != nil {
 		return info, err
 	}
-	return extensionInfo{ID: extensionID(dir), Name: m.Name, Version: m.Version, Dir: dir}, nil
+	return extensionInfo{
+		ID:        extensionID(dir),
+		Name:      m.Name,
+		Version:   m.Version,
+		Dir:       dir,
+		HasWorker: m.Background.ServiceWorker != "",
+	}, nil
 }
 
 // unpackDirName picks the directory an archive is unpacked into. The archive's

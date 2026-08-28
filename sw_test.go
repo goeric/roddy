@@ -41,24 +41,35 @@ func writeSWTestExtension(t *testing.T, dir string) string {
 	return dir
 }
 
-// launchWithSWExtension starts a headless browser with the fixture extension
-// loaded, the same way "roddy start --extension" does.
-func launchWithSWExtension(t *testing.T) (*rod.Browser, string) {
+// launchWithExtensions starts a headless browser with the given unpacked
+// extension directories loaded, the same way "roddy start --extension" does,
+// and returns the state entries roddy would have recorded for them.
+func launchWithExtensions(t *testing.T, dirs ...string) (*rod.Browser, []extensionInfo) {
 	t.Helper()
-	dir := writeSWTestExtension(t, filepath.Join(t.TempDir(), "swext"))
-	dir, err := filepath.EvalSymlinks(dir)
-	if err != nil {
-		t.Fatal(err)
+	infos := make([]extensionInfo, len(dirs))
+	for i, dir := range dirs {
+		info, err := resolveExtension(dir, t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		infos[i] = info
 	}
 
-	l := configureExtensions(baseLauncher().Headless(true), true,
-		[]extensionInfo{{Dir: dir}})
+	l := configureExtensions(baseLauncher().Headless(true), true, infos)
 	if bin := os.Getenv("ROD_CHROME_BIN"); bin != "" {
 		l = l.Bin(bin)
 	}
 	browser := rod.New().ControlURL(l.MustLaunch()).MustConnect()
 	t.Cleanup(func() { browser.MustClose() })
-	return browser, extensionID(dir)
+	return browser, infos
+}
+
+// launchWithSWExtension starts a browser with only the service-worker fixture.
+func launchWithSWExtension(t *testing.T) (*rod.Browser, string) {
+	t.Helper()
+	browser, infos := launchWithExtensions(t,
+		writeSWTestExtension(t, filepath.Join(t.TempDir(), "swext")))
+	return browser, infos[0].ID
 }
 
 // --- argument handling (no browser) ---
@@ -80,6 +91,8 @@ func TestParseSWFlags(t *testing.T) {
 			"abc", 10 * time.Second, []string{"eval", "1 + 1"}},
 		{"expression starting with a dash", []string{"eval", "-1 + 2"},
 			"", 5 * time.Second, []string{"eval", "-1 + 2"}},
+		{"double dash ends the flags", []string{"eval", "--ext", "abc", "--", "--x"},
+			"abc", 5 * time.Second, []string{"eval", "--x"}},
 		{"zero timeout", []string{"--timeout", "0"}, "", 0, nil},
 	}
 	for _, c := range cases {
@@ -96,14 +109,52 @@ func TestParseSWFlags(t *testing.T) {
 		}
 	}
 
-	for _, args := range [][]string{{"eval", "--ext"}, {"--timeout", "soon"}} {
+	// An empty --ext is a mistake, not "no filter": it is what an unset shell
+	// variable expands to.
+	bad := [][]string{
+		{"eval", "--ext"},
+		{"--timeout", "soon"},
+		{"eval", "--ext", "", "1"},
+		{"eval", "--ext=", "1"},
+	}
+	for _, args := range bad {
 		if _, _, _, err := parseSWFlags(args); err == nil {
 			t.Errorf("%v: expected an error", args)
 		}
 	}
 }
 
+func TestSWCandidates(t *testing.T) {
+	worker := extensionInfo{ID: "aaaa", Name: "Worker", HasWorker: true}
+	worker2 := extensionInfo{ID: "bbbb", Name: "Worker Two", HasWorker: true}
+	plain := extensionInfo{ID: "cccc", Name: "Content Only"}
+
+	cases := []struct {
+		name  string
+		exts  []extensionInfo
+		want  int
+		known bool
+	}{
+		{"nothing loaded", nil, 0, false},
+		{"one worker, one content script", []extensionInfo{worker, plain}, 1, true},
+		{"two workers", []extensionInfo{worker, worker2}, 2, true},
+		{"content scripts only", []extensionInfo{plain}, 1, false},
+		// State written before roddy recorded the flag: nothing is known, so
+		// every extension stays a candidate and the old counting applies.
+		{"legacy state", []extensionInfo{{ID: "aaaa"}, {ID: "bbbb"}}, 2, false},
+	}
+	for _, c := range cases {
+		candidates, known := swCandidates(c.exts)
+		if len(candidates) != c.want || known != c.known {
+			t.Errorf("%s: got %d candidates (known=%v), want %d (known=%v)",
+				c.name, len(candidates), known, c.want, c.known)
+		}
+	}
+}
+
 func TestCheckExtensionFilter(t *testing.T) {
+	// Neither of these declares a worker, so this doubles as the compatibility
+	// case: state written before roddy recorded the flag must behave as before.
 	two := []extensionInfo{{ID: "aaaa", Name: "First"}, {ID: "bbbb", Name: "Second"}}
 	one := two[:1]
 
@@ -148,6 +199,56 @@ func TestCheckExtensionFilter(t *testing.T) {
 				t.Errorf("empty state (ext %q, mustChoose=%v): %v", extID, mustChoose, err)
 			}
 		}
+	}
+}
+
+func TestCheckExtensionFilter_ContentScriptOnly(t *testing.T) {
+	mixed := []extensionInfo{
+		{ID: "aaaa", Name: "Worker", HasWorker: true},
+		{ID: "cccc", Name: "Content Only"},
+	}
+
+	// Only one of the two can ever have a worker, so eval needs no --ext.
+	if err := checkExtensionFilter(mixed, "", true); err != nil {
+		t.Errorf("eval should not need --ext when only one extension can have a worker: %v", err)
+	}
+	// Filtering to the one that cannot is a mistake of its own, told apart from
+	// naming an extension that is not loaded at all.
+	err := checkExtensionFilter(mixed, "cccc", true)
+	if err == nil {
+		t.Fatal("expected an error for an extension with no service worker")
+	}
+	if !strings.Contains(err.Error(), "no service worker") || strings.Contains(err.Error(), "not loaded") {
+		t.Errorf("unexpected error: %v", err)
+	}
+	// Two worker-capable extensions still force a choice, and only they are
+	// offered as candidates.
+	both := append(append([]extensionInfo{}, mixed...),
+		extensionInfo{ID: "bbbb", Name: "Worker Two", HasWorker: true})
+	err = checkExtensionFilter(both, "", true)
+	if err == nil {
+		t.Fatal("expected an error when two extensions could have a worker")
+	}
+	if strings.Contains(err.Error(), "cccc") {
+		t.Errorf("the content-script-only extension is not a candidate: %v", err)
+	}
+}
+
+func TestResolveExtension_RecordsServiceWorker(t *testing.T) {
+	sw, err := resolveExtension(writeSWTestExtension(t, filepath.Join(t.TempDir(), "swext")), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sw.HasWorker {
+		t.Error("an extension declaring background.service_worker should report HasWorker")
+	}
+	// extensions_test.go's fixture is content-script-only.
+	plain, err := resolveExtension(writeTestExtension(t, filepath.Join(t.TempDir(), "plain")), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plain.HasWorker {
+		t.Error("a content-script-only extension should not report HasWorker")
 	}
 }
 
@@ -234,6 +335,47 @@ func TestListServiceWorkers_IgnoresPageServiceWorkers(t *testing.T) {
 	}
 }
 
+func TestSW_ContentScriptOnlyExtensionIsNotAWorkerCandidate(t *testing.T) {
+	tmp := t.TempDir()
+	browser, infos := launchWithExtensions(t,
+		writeSWTestExtension(t, filepath.Join(tmp, "swext")),
+		writeTestExtension(t, filepath.Join(tmp, "plain")))
+
+	candidates, known := swCandidates(infos)
+	if !known || len(candidates) != 1 {
+		t.Fatalf("got %d worker candidates (known=%v), want 1", len(candidates), known)
+	}
+	// eval needs no --ext: the second extension can never own a worker.
+	if err := checkExtensionFilter(infos, "", true); err != nil {
+		t.Errorf("eval should not need --ext here: %v", err)
+	}
+
+	// Listing must not sit out the whole timeout waiting for a second worker.
+	start := time.Now()
+	workers, err := waitServiceWorkers(browser, "", len(candidates), 10*time.Second)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(workers) != 1 || workers[0].ExtensionID != infos[0].ID {
+		t.Fatalf("got %+v, want only the service-worker extension %s", workers, infos[0].ID)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("listing took %v, close to the full timeout", elapsed)
+	}
+
+	sw, err := waitServiceWorker(browser, "", 15*time.Second)
+	if err != nil {
+		t.Fatalf("no service worker: %v", err)
+	}
+	got, err := evalInServiceWorker(browser, sw, `self.SW_PROBE`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if raw := got.JSON("", ""); raw != `"alive"` {
+		t.Errorf("evaluated in the wrong context: got %s", raw)
+	}
+}
+
 // --- evalInServiceWorker ---
 
 func TestEvalInServiceWorker(t *testing.T) {
@@ -305,6 +447,16 @@ func TestEvalInServiceWorker_SurfacesExceptions(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "storage not initialized") {
 		t.Errorf("error does not carry the rejection reason: %v", err)
+	}
+
+	// null has neither a Description nor a Value, so the reason comes from the
+	// exception object's subtype.
+	_, err = evalInServiceWorker(browser, sw, `Promise.reject(null)`)
+	if err == nil {
+		t.Fatal("expected a rejected promise to return an error")
+	}
+	if !strings.Contains(err.Error(), "null") {
+		t.Errorf("error does not say what was rejected: %v", err)
 	}
 }
 

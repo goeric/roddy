@@ -841,7 +841,17 @@ func cmdJS(args []string) {
 	if err != nil {
 		fatal("JS error: %v", err)
 	}
-	printJSValue(result.Value)
+	printJSValue(remoteObjectValue(result))
+}
+
+// remoteObjectValue reads the value out of an evaluation result. NaN, ±Infinity
+// and -0 have no JSON encoding, so Chrome leaves Value empty and spells them in
+// UnserializableValue instead; without this they would all print as null.
+func remoteObjectValue(obj *proto.RuntimeRemoteObject) gson.JSON {
+	if obj.UnserializableValue != "" {
+		return gson.New(string(obj.UnserializableValue))
+	}
+	return obj.Value
 }
 
 // printJSValue prints an evaluation result based on its JSON type: simple

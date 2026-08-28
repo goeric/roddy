@@ -171,13 +171,17 @@ roddy sw eval 'chrome.runtime.getManifest().version'
 ```
 
 With several extensions loaded, pick one with `--ext ID` — `sw eval` refuses to
-guess rather than landing in whichever worker happens to be running. Flags may
-appear anywhere in the command, before or after the expression.
+guess rather than landing in whichever worker happens to be running. Only
+extensions that declare a `background.service_worker` count towards that, so a
+content-script-only extension alongside never forces the choice. Flags may
+appear anywhere in the command, before or after the expression; put `--` in
+front of an expression that itself starts with `--`.
 
-Both forms wait up to `--timeout` (default 5s) for the workers to appear, which
-covers the startup race after `roddy start`; `roddy sw` exits 1 when none are
-running. The evaluation itself is bounded separately, by `ROD_TIMEOUT` (default
-30s), so an expression whose promise never settles fails instead of hanging.
+Both forms wait up to `--timeout` (default 5s) for the workers to appear — one
+per extension that declares one — which covers the startup race after `roddy
+start`; `roddy sw` exits 1 when none are running. The evaluation itself is
+bounded separately, by `ROD_TIMEOUT` (default 30s), so an expression whose
+promise never settles fails instead of hanging.
 
 Waiting does not wake a worker Chrome has already suspended for idleness. Any
 event the worker has a listener for restarts it, so the way to do that on

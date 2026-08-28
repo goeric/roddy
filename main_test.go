@@ -936,8 +936,8 @@ func TestAssert_EqualityPass_BoolString(t *testing.T) {
 	}
 }
 
-func TestAssert_ValueFormatting_MatchesJSCommand(t *testing.T) {
-	// Verify that the value formatting used by assert matches what roddy js outputs
+func TestFormatJSValue(t *testing.T) {
+	// js and assert both print through formatJSValue, so this covers both.
 	page := navigateTo(t, "/")
 
 	tests := []struct {
@@ -949,6 +949,8 @@ func TestAssert_ValueFormatting_MatchesJSCommand(t *testing.T) {
 		{`true`, "true"},                  // boolean
 		{`null`, "null"},                  // null
 		{`document.querySelectorAll("button").length`, "2"}, // number from DOM
+		{`0/0`, "NaN"},      // no JSON encoding; would print null
+		{`1/0`, "Infinity"}, // likewise
 	}
 
 	for _, tt := range tests {
@@ -958,11 +960,11 @@ func TestAssert_ValueFormatting_MatchesJSCommand(t *testing.T) {
 			t.Fatalf("eval %q failed: %v", tt.expr, err)
 		}
 
-		// Both commands format through formatJSValue, so testing it covers both.
-		actual := formatJSValue(result.Value)
-		if actual != tt.expected {
+		// The same two steps cmdJS takes to print a result.
+		v := remoteObjectValue(result)
+		if actual := formatJSValue(v); actual != tt.expected {
 			t.Errorf("expr %q: expected %q, got %q (raw=%q)", tt.expr, tt.expected, actual,
-				result.Value.JSON("", ""))
+				v.JSON("", ""))
 		}
 	}
 }
