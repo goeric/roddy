@@ -22,6 +22,7 @@ import (
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/proto"
+	"github.com/ysmood/gson"
 )
 
 //go:embed help.txt
@@ -297,6 +298,8 @@ func main() {
 		cmdAXFind(args)
 	case "ax-node":
 		cmdAXNode(args)
+	case "sw":
+		cmdSW(args)
 	case "help", "-h", "--help":
 		printUsage()
 		os.Exit(0)
@@ -838,24 +841,31 @@ func cmdJS(args []string) {
 	if err != nil {
 		fatal("JS error: %v", err)
 	}
-	// Print the value based on its JSON type
-	v := result.Value
+	fmt.Println(formatJSValue(remoteObjectValue(result)))
+}
+
+// remoteObjectValue reads the value out of an evaluation result. NaN, ±Infinity
+// and -0 have no JSON encoding, so Chrome leaves Value empty and spells them in
+// UnserializableValue instead; without this they would all print as null.
+func remoteObjectValue(obj *proto.RuntimeRemoteObject) gson.JSON {
+	if obj.UnserializableValue != "" {
+		return gson.New(string(obj.UnserializableValue))
+	}
+	return obj.Value
+}
+
+// formatJSValue renders an evaluation result as text: strings unquoted,
+// objects and arrays pretty-printed, everything else as its JSON form. assert
+// compares against this same text, so it must match what js prints.
+func formatJSValue(v gson.JSON) string {
 	raw := v.JSON("", "")
-	// For simple types, print cleanly; for objects/arrays, pretty-print
 	switch {
-	case raw == "null" || raw == "undefined":
-		fmt.Println(raw)
-	case raw == "true" || raw == "false":
-		fmt.Println(raw)
 	case len(raw) > 0 && raw[0] == '"':
-		// String value - print unquoted
-		fmt.Println(v.Str())
+		return v.Str()
 	case len(raw) > 0 && (raw[0] == '{' || raw[0] == '['):
-		// Object or array - pretty print
-		fmt.Println(v.JSON("", "  "))
+		return v.JSON("", "  ")
 	default:
-		// Numbers and other primitives
-		fmt.Println(raw)
+		return raw
 	}
 }
 
@@ -1550,21 +1560,8 @@ func cmdAssert(args []string) {
 	}
 
 	// Format the result value as a string, matching the js command's output
-	v := result.Value
-	raw := v.JSON("", "")
-	var actual string
-	switch {
-	case raw == "null" || raw == "undefined":
-		actual = raw
-	case raw == "true" || raw == "false":
-		actual = raw
-	case len(raw) > 0 && raw[0] == '"':
-		actual = v.Str()
-	case len(raw) > 0 && (raw[0] == '{' || raw[0] == '['):
-		actual = v.JSON("", "  ")
-	default:
-		actual = raw
-	}
+	raw := result.Value.JSON("", "")
+	actual := formatJSValue(result.Value)
 
 	if expected != nil {
 		// Equality mode: compare string representation to expected
