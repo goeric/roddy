@@ -236,20 +236,15 @@ func cmdSW(args []string) {
 		sub = rest[0]
 		rest = rest[1:]
 	}
-	usage := swListUsage
-	if sub == "eval" {
-		usage = swEvalUsage
-	}
 	expr := strings.Join(rest, " ")
-	if sub == "eval" {
-		if expr == "" {
-			fatal("%s", usage)
-		}
-	} else if len(rest) > 0 {
+	switch {
+	case sub == "eval" && expr == "":
+		fatal("%s", swEvalUsage)
+	case sub == "list" && len(rest) > 0:
 		if strings.HasPrefix(rest[0], "-") {
-			fatal("unknown flag: %s\n%s", rest[0], usage)
+			fatal("unknown flag: %s\n%s", rest[0], swListUsage)
 		}
-		fatal("unknown sw subcommand: %q\n%s", rest[0], usage)
+		fatal("unknown sw subcommand: %q\n%s", rest[0], swListUsage)
 	}
 
 	s, err := loadState()
@@ -273,7 +268,7 @@ func cmdSW(args []string) {
 		if err != nil {
 			fatal("%v", err)
 		}
-		printJSValue(v)
+		fmt.Println(formatJSValue(v))
 		return
 	}
 
@@ -326,17 +321,18 @@ func parseSWFlags(args []string) (ext string, timeout time.Duration, rest []stri
 			i++
 			value = args[i]
 		}
-		if strings.HasSuffix(name, "ext") {
+		switch name {
+		case "--ext", "-ext":
 			// An unset shell variable would otherwise read as "no filter" and
 			// quietly evaluate in whichever extension turned up.
 			if value == "" {
 				return "", 0, nil, fmt.Errorf("flag %s needs a non-empty value", name)
 			}
 			ext = value
-			continue
-		}
-		if timeout, err = time.ParseDuration(value); err != nil {
-			return "", 0, nil, fmt.Errorf("invalid value %q for flag %s: %w", value, name, err)
+		default: // --timeout, -timeout
+			if timeout, err = time.ParseDuration(value); err != nil {
+				return "", 0, nil, fmt.Errorf("invalid value %q for flag %s: %w", value, name, err)
+			}
 		}
 	}
 	return ext, timeout, rest, nil

@@ -841,7 +841,7 @@ func cmdJS(args []string) {
 	if err != nil {
 		fatal("JS error: %v", err)
 	}
-	printJSValue(remoteObjectValue(result))
+	fmt.Println(formatJSValue(remoteObjectValue(result)))
 }
 
 // remoteObjectValue reads the value out of an evaluation result. NaN, ±Infinity
@@ -854,29 +854,17 @@ func remoteObjectValue(obj *proto.RuntimeRemoteObject) gson.JSON {
 	return obj.Value
 }
 
-// printJSValue prints an evaluation result based on its JSON type: simple
-// types cleanly, objects and arrays pretty-printed.
-func printJSValue(v gson.JSON) {
-	fmt.Println(formatJSValue(v))
-}
-
-// formatJSValue renders an evaluation result the way printJSValue prints it.
-// assert compares against this same text, so both must format identically.
+// formatJSValue renders an evaluation result as text: strings unquoted,
+// objects and arrays pretty-printed, everything else as its JSON form. assert
+// compares against this same text, so it must match what js prints.
 func formatJSValue(v gson.JSON) string {
 	raw := v.JSON("", "")
 	switch {
-	case raw == "null" || raw == "undefined":
-		return raw
-	case raw == "true" || raw == "false":
-		return raw
 	case len(raw) > 0 && raw[0] == '"':
-		// String value - print unquoted
 		return v.Str()
 	case len(raw) > 0 && (raw[0] == '{' || raw[0] == '['):
-		// Object or array - pretty print
 		return v.JSON("", "  ")
 	default:
-		// Numbers and other primitives
 		return raw
 	}
 }
