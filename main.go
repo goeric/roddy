@@ -847,21 +847,27 @@ func cmdJS(args []string) {
 // printJSValue prints an evaluation result based on its JSON type: simple
 // types cleanly, objects and arrays pretty-printed.
 func printJSValue(v gson.JSON) {
+	fmt.Println(formatJSValue(v))
+}
+
+// formatJSValue renders an evaluation result the way printJSValue prints it.
+// assert compares against this same text, so both must format identically.
+func formatJSValue(v gson.JSON) string {
 	raw := v.JSON("", "")
 	switch {
 	case raw == "null" || raw == "undefined":
-		fmt.Println(raw)
+		return raw
 	case raw == "true" || raw == "false":
-		fmt.Println(raw)
+		return raw
 	case len(raw) > 0 && raw[0] == '"':
 		// String value - print unquoted
-		fmt.Println(v.Str())
+		return v.Str()
 	case len(raw) > 0 && (raw[0] == '{' || raw[0] == '['):
 		// Object or array - pretty print
-		fmt.Println(v.JSON("", "  "))
+		return v.JSON("", "  ")
 	default:
 		// Numbers and other primitives
-		fmt.Println(raw)
+		return raw
 	}
 }
 
@@ -1556,21 +1562,8 @@ func cmdAssert(args []string) {
 	}
 
 	// Format the result value as a string, matching the js command's output
-	v := result.Value
-	raw := v.JSON("", "")
-	var actual string
-	switch {
-	case raw == "null" || raw == "undefined":
-		actual = raw
-	case raw == "true" || raw == "false":
-		actual = raw
-	case len(raw) > 0 && raw[0] == '"':
-		actual = v.Str()
-	case len(raw) > 0 && (raw[0] == '{' || raw[0] == '['):
-		actual = v.JSON("", "  ")
-	default:
-		actual = raw
-	}
+	raw := result.Value.JSON("", "")
+	actual := formatJSValue(result.Value)
 
 	if expected != nil {
 		// Equality mode: compare string representation to expected

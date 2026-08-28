@@ -9,12 +9,15 @@ Browser lifecycle:
   roddy stop                     Shut down Chrome
   roddy status                   Show browser status
   roddy extensions               List extensions loaded into this session
-  roddy sw                       List extension service workers
+  roddy sw [list]                List extension service workers (exit 1 if
+                                  none are running)
   roddy sw eval <expr>           Evaluate JS inside an extension's service
-                                  worker; promises are awaited. Flags after
-                                  eval: --ext ID picks one extension when
-                                  several are loaded, --timeout DUR (default
-                                  5s) bounds the wait for a worker to appear
+                                  worker; promises are awaited
+                                  Flags for both, in any position: --ext ID
+                                  picks one extension when several are loaded,
+                                  --timeout DUR (default 5s) bounds the wait
+                                  for the workers to appear. The evaluation
+                                  itself is bounded by ROD_TIMEOUT
 
 Navigation:
   roddy open <url>               Navigate to URL
@@ -83,8 +86,10 @@ Use "roddy start --local" to create a directory-scoped session.
 
 Environment:
   RODDY_HOME                     Override data directory (default: ~/.roddy)
+  ROD_TIMEOUT                    Timeout in seconds for a single operation,
+                                  including a "sw eval" (default: 30)
 
 Exit codes:
   0  Success
-  1  Check failed (exists, visible, assert, ax-find returned no match)
+  1  Check failed (exists, visible, assert, ax-find or sw found nothing)
   2  Error (bad arguments, no browser, timeout, etc.)

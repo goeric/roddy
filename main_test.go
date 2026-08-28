@@ -51,6 +51,8 @@ func TestMain(m *testing.M) {
 	mux.HandleFunc("/download", handleDownload)
 	mux.HandleFunc("/testfile.txt", handleTestFile)
 	mux.HandleFunc("/empty", handleEmpty)
+	mux.HandleFunc("/sw-page", handleSWPage)
+	mux.HandleFunc("/page-sw.js", handlePageSW)
 	server := httptest.NewServer(mux)
 
 	env = &testEnv{browser: browser, server: server}
@@ -148,6 +150,25 @@ func handleEmpty(w http.ResponseWriter, r *http.Request) {
 <head><title>Empty Page</title></head>
 <body></body>
 </html>`))
+}
+
+// handleSWPage serves a page that registers an ordinary (non-extension) service
+// worker, so tests can check those are filtered out. The test server is on
+// 127.0.0.1, which counts as a secure context, so registration is allowed.
+func handleSWPage(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html")
+	w.Write([]byte(`<!DOCTYPE html>
+<html lang="en">
+<head><title>SW Page</title></head>
+<body>
+  <script>navigator.serviceWorker.register("/page-sw.js");</script>
+</body>
+</html>`))
+}
+
+func handlePageSW(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/javascript")
+	w.Write([]byte(`self.addEventListener("install", () => self.skipWaiting());`))
 }
 
 // --- Helper: navigate to a fixture and return the page ---
@@ -937,24 +958,11 @@ func TestAssert_ValueFormatting_MatchesJSCommand(t *testing.T) {
 			t.Fatalf("eval %q failed: %v", tt.expr, err)
 		}
 
-		v := result.Value
-		raw := v.JSON("", "")
-		var actual string
-		switch {
-		case raw == "null" || raw == "undefined":
-			actual = raw
-		case raw == "true" || raw == "false":
-			actual = raw
-		case len(raw) > 0 && raw[0] == '"':
-			actual = v.Str()
-		case len(raw) > 0 && (raw[0] == '{' || raw[0] == '['):
-			actual = v.JSON("", "  ")
-		default:
-			actual = raw
-		}
-
+		// Both commands format through formatJSValue, so testing it covers both.
+		actual := formatJSValue(result.Value)
 		if actual != tt.expected {
-			t.Errorf("expr %q: expected %q, got %q (raw=%q)", tt.expr, tt.expected, actual, raw)
+			t.Errorf("expr %q: expected %q, got %q (raw=%q)", tt.expr, tt.expected, actual,
+				result.Value.JSON("", ""))
 		}
 	}
 }

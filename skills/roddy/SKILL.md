@@ -118,7 +118,7 @@ ps -ww -o command= -p "$(roddy status | sed -n 's/.*PID \([0-9]*\).*/\1/p')" \
 
 ### Reaching the service worker directly
 
-`roddy sw` evaluates JS **inside** an MV3 extension's background service
+`roddy sw eval` evaluates JS **inside** an MV3 extension's background service
 worker — the context where `chrome.*` APIs live and the extension's real state
 sits. Promises are awaited:
 
@@ -129,16 +129,19 @@ roddy sw eval 'chrome.storage.local.set({user:"t"}).then(() => "seeded")'
 roddy sw eval 'chrome.runtime.getManifest().version'
 ```
 
-With several extensions loaded, disambiguate with `--ext ID` (flags go after
-`eval`). `sw eval` waits up to `--timeout` (default 5s) for the worker to
-appear after `start`; it cannot wake a worker Chrome suspended for idleness —
-open one of the extension's pages to wake it.
+With several extensions loaded, disambiguate with `--ext ID` — `sw eval`
+refuses to guess. Flags may appear anywhere, before or after the expression.
+Both forms wait up to `--timeout` (default 5s) for workers to appear after
+`start`, and `roddy sw` exits 1 if none are running; the evaluation itself is
+bounded by `ROD_TIMEOUT` (default 30s). Neither wakes a worker Chrome suspended
+for idleness — send it a message to do that, as shown below.
 
 This is the backbone of extension e2e testing: seed state through the worker,
 drive the page, assert on both sides. For a WXT project the build output is the
 extension — `roddy start --extension .output/chrome-mv3`.
 
-Alternatively, a worker also responds to messages sent from any extension page:
+Alternatively, a worker also responds to messages sent from any extension page —
+and the message itself is an event, so this starts a suspended worker:
 
 ```bash
 ID=$(roddy extensions | awk '{print $1}')
@@ -146,9 +149,10 @@ roddy open "chrome-extension://$ID/popup.html"
 roddy js "chrome.runtime.sendMessage({type:'ping'})"     # returns the worker's reply
 ```
 
-On ordinary sites `chrome.*` is unavailable to `roddy js` — from a normal page
-you can only observe what the content script did to the DOM; use `roddy sw
-eval` for everything behind the scenes.
+On ordinary sites the extension `chrome.*` APIs (`chrome.storage` and friends)
+are unavailable to `roddy js` — from a normal page you can only observe what the
+content script did to the DOM; use `roddy sw eval` for everything behind the
+scenes.
 
 To reach a page served by the extension you need the ID Chrome assigned it,
 which `roddy extensions` prints as the first column:

@@ -162,7 +162,7 @@ DOM and is invisible to page-level commands. `roddy sw` reaches inside it:
 
 ```bash
 roddy sw                    # list extension service workers
-# ldmakemplfmadpiihagnajidjbhnjlcm  chrome-extension://ldmakem…/sw.js
+# ldmakemplfmadpiihagnajidjbhnjlcm  chrome-extension://ldmakemplfmadpiihagnajidjbhnjlcm/sw.js
 
 # Evaluate in the worker's context — chrome.* APIs work, promises are awaited
 roddy sw eval 'chrome.storage.local.get(null)'
@@ -170,11 +170,19 @@ roddy sw eval 'chrome.storage.local.set({flag: true}).then(() => "seeded")'
 roddy sw eval 'chrome.runtime.getManifest().version'
 ```
 
-With several extensions loaded, pick one with `--ext ID` (flags go after
-`eval`). `sw eval` waits up to `--timeout` (default 5s) for the worker to
-appear, which covers the startup race after `roddy start`. It does not wake a
-worker Chrome has already suspended for idleness; poking an extension page or
-reloading a tab it listens to will.
+With several extensions loaded, pick one with `--ext ID` — `sw eval` refuses to
+guess rather than landing in whichever worker happens to be running. Flags may
+appear anywhere in the command, before or after the expression.
+
+Both forms wait up to `--timeout` (default 5s) for the workers to appear, which
+covers the startup race after `roddy start`; `roddy sw` exits 1 when none are
+running. The evaluation itself is bounded separately, by `ROD_TIMEOUT` (default
+30s), so an expression whose promise never settles fails instead of hanging.
+
+Waiting does not wake a worker Chrome has already suspended for idleness. Any
+event the worker has a listener for restarts it, so the way to do that on
+demand is to send it one: `chrome.runtime.sendMessage` from an extension page
+dispatches an event that starts the worker.
 
 This makes end-to-end extension tests plain shell — seed storage through the
 worker, drive the page, assert on both sides:
@@ -189,9 +197,10 @@ roddy assert 'document.documentElement.dataset.myExtension' 'active'
 roddy sw eval 'chrome.storage.local.get("lastSeen").then(v => v.lastSeen)'
 ```
 
-Because roddy derives extension IDs from the load path, the ID is stable across
-runs — `chrome-extension://` URLs can be hardcoded in test scripts instead of
-being discovered at runtime.
+Because Chrome derives an unpacked extension's ID from its load path — roddy
+merely reproduces the computation to print the ID before launch — the ID is
+stable across runs, so `chrome-extension://` URLs can be hardcoded in test
+scripts instead of being discovered at runtime.
 
 ### Navigate
 
@@ -510,7 +519,7 @@ This pattern is useful in CI — run Roddy as a post-deploy check, an accessibil
 |---|---|---|
 | `RODDY_HOME` | `~/.roddy` | Data directory for state and Chrome profile |
 | `ROD_CHROME_BIN` | `/usr/bin/google-chrome` | Path to Chrome/Chromium binary |
-| `ROD_TIMEOUT` | `30` | Default timeout in seconds for element queries |
+| `ROD_TIMEOUT` | `30` | Default timeout in seconds for element queries and for a `sw eval` |
 | `HTTPS_PROXY` / `HTTP_PROXY` | (none) | Authenticated proxy auto-detected on start |
 
 Global state is stored in `~/.roddy/state.json` with Chrome user data in `~/.roddy/chrome-data/`. When using `--local`, state is stored in `./.roddy/state.json` and `./.roddy/chrome-data/` in the current directory instead. Set `RODDY_HOME` to override the default global directory.
@@ -552,8 +561,8 @@ The tool uses the [rod](https://github.com/go-rod/rod) Go library which communic
 | `stop` | | Shut down Chrome |
 | `status` | | Show browser status |
 | `extensions` | | List extensions loaded into this session |
-| `sw` | `[--ext ID]` | List extension service workers |
-| `sw eval` | `[--ext ID] [--timeout DUR] <expr>` | Evaluate JS inside an extension's service worker |
+| `sw` | `[list] [--ext ID] [--timeout DUR]` | List extension service workers, waiting up to `--timeout` for them (exit 1 if none are running) |
+| `sw eval` | `<expr> [--ext ID] [--timeout DUR]` | Evaluate JS inside an extension's service worker (the evaluation is bounded by `ROD_TIMEOUT`); flags may go either side of the expression |
 | `open` | `<url>` | Navigate to URL |
 | `back` | | Go back in history |
 | `forward` | | Go forward in history |
