@@ -1,0 +1,16 @@
+{
+  "$schema": "https://code.claude.com/schemas/marketplace.json",
+  "name": "roddy",
+  "owner": {
+    "name": "Eric Posen",
+    "url": "https://github.com/goeric"
+  },
+  "description": "The roddy CLI and its Claude Code skill \u2014 headless Chrome automation and browser debugging from the command line.",
+  "plugins": [
+    {
+      "name": "roddy",
+      "source": "./",
+      "description": "Drive headless Chrome from the command line with the roddy CLI"
+    }
+  ]
+}

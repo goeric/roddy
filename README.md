@@ -45,6 +45,45 @@ Requires:
 - Go 1.21+
 - Google Chrome or Chromium installed (or set `ROD_CHROME_BIN=/path/to/chrome`)
 
+## Claude Code skill
+
+This repo ships a [Claude Code](https://claude.com/claude-code) skill that
+teaches Claude to reach for Roddy — instead of Playwright, Puppeteer, or the
+Chrome DevTools MCP server — whenever a task needs a real browser: reproducing a
+UI bug, inspecting the live DOM, reading console errors, filling a form, or
+screenshotting a page.
+
+Install it as a plugin:
+
+```
+/plugin marketplace add goeric/roddy
+/plugin install roddy@roddy
+```
+
+Then restart Claude Code. The skill triggers on its own; you don't need to name
+it. Update later with `/plugin update roddy`.
+
+The skill documents the CLI, not just its existence — session lifecycle, the
+check commands and their exit codes, extension loading, and the failure modes
+worth recognising. It assumes `roddy` is on `PATH`, so install the binary first.
+
+<details>
+<summary>Installing the skill without plugins</summary>
+
+The skill is a single self-contained file, so you can also symlink it into your
+personal skills directory:
+
+```bash
+git clone https://github.com/goeric/roddy.git
+mkdir -p ~/.claude/skills
+ln -s "$PWD/roddy/skills/roddy" ~/.claude/skills/roddy
+```
+
+Restart Claude Code afterwards. Use one method or the other, not both — two
+skills named `roddy` will both load and conflict.
+
+</details>
+
 ## Architecture
 
 ```
