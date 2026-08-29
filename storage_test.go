@@ -229,8 +229,6 @@ func TestStorage_EndToEnd(t *testing.T) {
 		return v
 	}
 
-	// The fixture worker seeds local storage at boot; wait for the seed so the
-	// clear below cannot race it and leak "seeded" into the counts.
 	get := func(area, key string) (bool, gson.JSON) {
 		t.Helper()
 		present, v, err := storageGetResult(eval(storageGetJS(area, key)))
@@ -240,6 +238,8 @@ func TestStorage_EndToEnd(t *testing.T) {
 		return present, v
 	}
 
+	// The fixture worker seeds local storage at boot; wait for the seed so the
+	// clear below cannot race it and leak "seeded" into the counts.
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		if present, _ := get("local", "seeded"); present {
