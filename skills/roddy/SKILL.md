@@ -143,31 +143,6 @@ This is the backbone of extension e2e testing: seed state through the worker,
 drive the page, assert on both sides. For a WXT project the build output is the
 extension — `roddy start --extension .output/chrome-mv3`.
 
-### Reading console output
-
-`roddy logs` prints the console of the active page, and `roddy logs --sw` an
-extension service worker's — including output from **before** the command ran,
-because Chrome replays its console buffer to each new debugging session. This
-is the fastest way to see why a page or worker misbehaved after the fact:
-
-```bash
-roddy logs                   # what has this page logged? (errors include stacks)
-roddy logs --follow          # stream live output until interrupted
-roddy logs --sw              # what did the extension's worker log?
-```
-
-A worker has no DOM, so its console is often the only way to see what it did —
-check `roddy logs --sw` before instrumenting anything, and check it early: a
-worker Chrome suspended and restarted is a new target with an empty buffer.
-Replayed object arguments print as `Object` (Chrome's buffer keeps no preview);
-live output under `--follow` shows one-level previews.
-
-A snapshot returns once the output goes quiet, or after `--timeout` (default 5s)
-if the page never stops logging — in which case it prints what it collected and
-says so on stderr. It sorts by timestamp; `--follow` cannot, so its replayed
-prefix arrives as two unsorted bursts (console, then browser log entries) ahead
-of the live stream.
-
 Alternatively, a worker also responds to messages sent from any extension page —
 and the message itself is an event, so this starts a suspended worker:
 
@@ -203,6 +178,31 @@ Gotchas worth knowing:
   `roddy pages` and switch with `roddy page <i>`.
 - Point `--extension` at the **built** output (e.g. a WXT/Plasmo `.output/chrome-mv3`
   or webpack `dist/` directory), not the extension's source directory.
+
+## Reading console output
+
+`roddy logs` prints the console of the active page, and `roddy logs --sw` an
+extension service worker's — including output from **before** the command ran,
+because Chrome replays its console buffer to each new debugging session. This
+is the fastest way to see why a page or worker misbehaved after the fact:
+
+```bash
+roddy logs                   # what has this page logged? (errors include stacks)
+roddy logs --follow          # stream live output until interrupted
+roddy logs --sw              # what did the extension's worker log?
+```
+
+A worker has no DOM, so its console is often the only way to see what it did —
+check `roddy logs --sw` before instrumenting anything, and check it early: a
+worker Chrome suspended and restarted is a new target with an empty buffer.
+Replayed object arguments print as `Object` (Chrome's buffer keeps no preview);
+live output under `--follow` shows one-level previews.
+
+A snapshot returns once the output goes quiet, or after `--timeout` (default 5s)
+if the page never stops logging — in which case it prints what it collected and
+says so on stderr. It sorts by timestamp; `--follow` cannot, so its replayed
+prefix arrives as two unsorted bursts (console, then browser log entries) ahead
+of the live stream.
 
 ## Command reference
 

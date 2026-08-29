@@ -212,24 +212,6 @@ func TestSnapshotLinesDeadline(t *testing.T) {
 	}
 }
 
-func TestIsMethodNotFound(t *testing.T) {
-	cases := []struct {
-		name string
-		err  error
-		want bool
-	}{
-		{"unknown method by code", &cdp.Error{Code: -32601, Message: "'Log.enable' wasn't found"}, true},
-		{"unknown method by text", &cdp.Error{Code: -32000, Message: "'Log.enable' wasn't found"}, true},
-		{"session gone", &cdp.Error{Code: -32001, Message: "Session with given id not found"}, false},
-		{"not a cdp error", context.DeadlineExceeded, false},
-	}
-	for _, c := range cases {
-		if got := isMethodNotFound(c.err); got != c.want {
-			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
-		}
-	}
-}
-
 // TestSnapshotLinesDeadlineDrainsBuffer: lines already delivered must not be
 // shed just because the deadline fired mid-read.
 func TestSnapshotLinesDeadlineDrainsBuffer(t *testing.T) {
@@ -257,6 +239,26 @@ func TestSnapshotLinesClosedStream(t *testing.T) {
 	}
 	if len(lines) != 1 || lines[0].text != "before the target went away" {
 		t.Errorf("collected lines lost on close: %v", lines)
+	}
+}
+
+// --- isMethodNotFound ---
+
+func TestIsMethodNotFound(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"unknown method by code", &cdp.Error{Code: -32601, Message: "'Log.enable' wasn't found"}, true},
+		{"unknown method by text", &cdp.Error{Code: -32000, Message: "'Log.enable' wasn't found"}, true},
+		{"session gone", &cdp.Error{Code: -32001, Message: "Session with given id not found"}, false},
+		{"not a cdp error", context.DeadlineExceeded, false},
+	}
+	for _, c := range cases {
+		if got := isMethodNotFound(c.err); got != c.want {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
 	}
 }
 

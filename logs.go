@@ -307,13 +307,15 @@ func formatConsoleArg(a *proto.RuntimeRemoteObject) string {
 
 // formatPreview renders Chrome's one-level object preview: {x: 1, y: "a"}.
 func formatPreview(p *proto.RuntimeObjectPreview) string {
+	// An array's property names are the indices, which add nothing.
+	isArray := p.Subtype == proto.RuntimeObjectPreviewSubtypeArray
 	parts := make([]string, 0, len(p.Properties)+1)
 	for _, prop := range p.Properties {
 		v := prop.Value
 		if prop.Type == proto.RuntimePropertyPreviewTypeString {
 			v = `"` + v + `"`
 		}
-		if p.Subtype == proto.RuntimeObjectPreviewSubtypeArray {
+		if isArray {
 			parts = append(parts, v)
 		} else {
 			parts = append(parts, prop.Name+": "+v)
@@ -322,7 +324,7 @@ func formatPreview(p *proto.RuntimeObjectPreview) string {
 	if p.Overflow {
 		parts = append(parts, "…")
 	}
-	if p.Subtype == proto.RuntimeObjectPreviewSubtypeArray {
+	if isArray {
 		return "[" + strings.Join(parts, ", ") + "]"
 	}
 	return "{" + strings.Join(parts, ", ") + "}"
