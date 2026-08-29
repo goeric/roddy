@@ -181,6 +181,11 @@ func signalPID(pid int) {
 // the page at closed is removed from a list of count pages: indexes above the
 // closed page shift down by one, and an index at or past the new end clamps.
 func adjustActivePage(active, closed, count int) int {
+	// A stale index (a tab crashed, or something else closed pages) clamps into
+	// range first, preserving the old code's accidental self-healing.
+	if active > count-1 {
+		active = count - 1
+	}
 	if closed < active {
 		active--
 	} else if active >= count-1 {
@@ -546,7 +551,10 @@ func cmdStart(args []string) {
 	if err != nil {
 		// The proxy helper was spawned before the launch; without a state file
 		// recording its PID, nothing could ever stop it.
-		signalPID(proxyPID)
+		if proxyPID > 0 {
+			fmt.Fprintf(os.Stderr, "stopping proxy helper (PID %d)\n", proxyPID)
+			signalPID(proxyPID)
+		}
 		fatal("failed to launch Chrome: %v", err)
 	}
 
@@ -566,6 +574,7 @@ func cmdStart(args []string) {
 	if err := saveState(state); err != nil {
 		// Without the state file the browser and proxy are unreachable by any
 		// future command, so leaving them running would just orphan them.
+		fmt.Fprintf(os.Stderr, "stopping Chrome (PID %d)\n", pid)
 		signalPID(proxyPID)
 		signalPID(pid)
 		fatal("failed to save state: %v", err)
@@ -752,7 +761,7 @@ func cmdOpen(args []string) {
 		}
 		s.ActivePage = 0
 		if err := saveState(s); err != nil {
-			fatal("failed to save state: %v", err)
+			fatal("page opened, but failed to save state: %v", err)
 		}
 	} else {
 		page, err = getActivePage(browser, s)
@@ -1510,7 +1519,7 @@ func cmdNewPage(args []string) {
 		}
 	}
 	if err := saveState(s); err != nil {
-		fatal("failed to save state: %v", err)
+		fatal("page opened, but failed to save state (the active page did not switch): %v", err)
 	}
 
 	info, _ := page.Info()
@@ -1553,7 +1562,7 @@ func cmdClosePage(args []string) {
 
 	s.ActivePage = adjustActivePage(s.ActivePage, idx, len(pages))
 	if err := saveState(s); err != nil {
-		fatal("failed to save state: %v", err)
+		fatal("page closed, but failed to save state (the active-page index may be stale): %v", err)
 	}
 	fmt.Printf("Closed page %d\n", idx)
 }
