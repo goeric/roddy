@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/go-rod/rod"
+	"github.com/go-rod/rod/lib/proto"
+	"github.com/ysmood/gson"
 )
 
 // --- fixtures ---
@@ -20,10 +22,11 @@ const swTestManifest = `{
   "permissions": ["storage"]
 }`
 
-// The worker sets a global and seeds storage, so tests can verify both plain
-// evaluation and that chrome.* APIs resolve inside the worker.
+// The worker sets a global, seeds storage, and logs, so tests can verify plain
+// evaluation, chrome.* APIs, and console replay from inside the worker.
 const swTestWorker = `self.SW_PROBE = "alive";
-chrome.storage.local.set({ seeded: "from-sw" });`
+chrome.storage.local.set({ seeded: "from-sw" });
+console.log("SW booted");`
 
 // writeSWTestExtension creates an unpacked MV3 extension with a service worker.
 func writeSWTestExtension(t *testing.T, dir string) string {
@@ -262,6 +265,42 @@ func TestExtensionIDFromURL(t *testing.T) {
 	for _, c := range cases {
 		if got := extensionIDFromURL(c.url); got != c.want {
 			t.Errorf("extensionIDFromURL(%q) = %q, want %q", c.url, got, c.want)
+		}
+	}
+}
+
+// TestExceptionDetail covers the fallbacks that keep a thrown primitive from
+// printing as a bare "Uncaught": sw eval and the log stream both rely on them.
+func TestExceptionDetail(t *testing.T) {
+	cases := []struct {
+		name string
+		d    *proto.RuntimeExceptionDetails
+		want string
+	}{
+		{"description wins", &proto.RuntimeExceptionDetails{
+			Text: "Uncaught",
+			Exception: &proto.RuntimeRemoteObject{
+				Type:        proto.RuntimeRemoteObjectTypeObject,
+				Subtype:     proto.RuntimeRemoteObjectSubtypeError,
+				Description: "Error: boom\n    at <anonymous>:1:1",
+				Value:       gson.New("ignored"),
+			},
+		}, "Error: boom\n    at <anonymous>:1:1"},
+		{"value fallback", &proto.RuntimeExceptionDetails{
+			Text:      "Uncaught (in promise)",
+			Exception: &proto.RuntimeRemoteObject{Type: proto.RuntimeRemoteObjectTypeString, Value: gson.New("nope")},
+		}, `"nope"`},
+		{"no exception object", &proto.RuntimeExceptionDetails{
+			Text: "Uncaught SyntaxError: Unexpected token",
+		}, "Uncaught SyntaxError: Unexpected token"},
+		{"undefined thrown", &proto.RuntimeExceptionDetails{
+			Text:      "Uncaught (in promise)",
+			Exception: &proto.RuntimeRemoteObject{Type: proto.RuntimeRemoteObjectTypeUndefined},
+		}, "undefined"},
+	}
+	for _, c := range cases {
+		if got := exceptionDetail(c.d); got != c.want {
+			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
 		}
 	}
 }

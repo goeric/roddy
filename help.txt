@@ -34,6 +34,15 @@ Page info:
   roddy text <selector>          Print text content of element
   roddy attr <selector> <name>   Print attribute value
   roddy pdf [file]               Save page as PDF
+  roddy logs [--follow | -f]     Print the page's console output: Chrome
+                                  replays buffered messages, so output from
+                                  before the command ran is included. --follow
+                                  keeps streaming until interrupted. --sw
+                                  reads an extension service worker's console
+                                  instead (--ext ID picks one). --timeout DUR
+                                  (default 5s) bounds how long a snapshot
+                                  collects, and with --sw the wait for the
+                                  worker as well
 
 Interaction:
   roddy js <expression>          Evaluate JavaScript expression

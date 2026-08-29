@@ -166,6 +166,20 @@ func fatal(format string, args ...interface{}) {
 	os.Exit(2)
 }
 
+// takeFlagValue resolves the value of a flag that takes one, in either the
+// "--flag=VAL" form the caller has already split off or the "--flag VAL" form
+// that consumes the next argument. next is the index the loop should continue
+// from, so a consumed value is not re-parsed as a flag of its own.
+func takeFlagValue(args []string, i int, name, inlineValue string, inline bool) (value string, next int, err error) {
+	if inline {
+		return inlineValue, i, nil
+	}
+	if i+1 == len(args) {
+		return "", i, fmt.Errorf("flag needs an argument: %s", name)
+	}
+	return args[i+1], i + 1, nil
+}
+
 // findUnknownFlag returns the first arg not registered in fs, preserving original form (e.g. --bogus).
 func findUnknownFlag(args []string, fs *flag.FlagSet) string {
 	for _, a := range args {
@@ -300,6 +314,8 @@ func main() {
 		cmdAXNode(args)
 	case "sw":
 		cmdSW(args)
+	case "logs":
+		cmdLogs(args)
 	case "help", "-h", "--help":
 		printUsage()
 		os.Exit(0)

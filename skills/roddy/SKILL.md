@@ -88,6 +88,7 @@ roddy start --extension ./packed.crx              # or a .crx / .zip (unpacked a
 roddy start --extension ./one --extension ./two   # repeat for several
 roddy extensions                                  # list what's loaded, with IDs
 roddy sw eval '<js>'                              # run JS inside the background service worker
+roddy logs [--sw]                                 # console output, incl. messages from before
 ```
 
 ### Extensions in headless mode
@@ -177,6 +178,31 @@ Gotchas worth knowing:
   `roddy pages` and switch with `roddy page <i>`.
 - Point `--extension` at the **built** output (e.g. a WXT/Plasmo `.output/chrome-mv3`
   or webpack `dist/` directory), not the extension's source directory.
+
+## Reading console output
+
+`roddy logs` prints the console of the active page, and `roddy logs --sw` an
+extension service worker's — including output from **before** the command ran,
+because Chrome replays its console buffer to each new debugging session. This
+is the fastest way to see why a page or worker misbehaved after the fact:
+
+```bash
+roddy logs                   # what has this page logged? (errors include stacks)
+roddy logs --follow          # stream live output until interrupted
+roddy logs --sw              # what did the extension's worker log?
+```
+
+A worker has no DOM, so its console is often the only way to see what it did —
+check `roddy logs --sw` before instrumenting anything, and check it early: a
+worker Chrome suspended and restarted is a new target with an empty buffer.
+Replayed object arguments print as `Object` (Chrome's buffer keeps no preview);
+live output under `--follow` shows one-level previews.
+
+A snapshot returns once the output goes quiet, or after `--timeout` (default 5s)
+if the page never stops logging — in which case it prints what it collected and
+says so on stderr. It sorts by timestamp; `--follow` cannot, so its replayed
+prefix arrives as two unsorted bursts (console, then browser log entries) ahead
+of the live stream.
 
 ## Command reference
 
@@ -275,12 +301,19 @@ roddy js "(function(){ return JSON.stringify(window.__APP_STATE__ || null); })()
 
 ### Capture console output
 
-roddy has no dedicated console command, so install a capturing hook with `js`
-and read it back. **Important:** the hook only catches messages logged *after*
-it's installed, and it lives on `window`, so a navigation or `reload` wipes it.
-That makes it ideal for **interaction and async bugs** (click something, then
-read what got logged) but it will miss messages emitted during initial page
-load.
+`roddy logs` is the console command — it includes load-time output, because
+Chrome replays its buffer to each new debugging session (see "Reading console
+output" above):
+
+```bash
+roddy logs                   # everything the page has logged, including at load
+roddy logs --follow          # stream live output until interrupted
+```
+
+A `js` hook is the alternative when you want **structured** output — JSON, your
+own filtering, or a running tally an assertion can read back. It only catches
+messages logged *after* it's installed, and it lives on `window`, so a
+navigation or `reload` wipes it:
 
 ```bash
 # 1) Install the hook right after opening the page
@@ -294,14 +327,12 @@ roddy waitidle
 roddy js "JSON.stringify(window.__logs)"
 ```
 
-To catch **load-time** console output (which the hook above misses), re-trigger
-the code path after hooking, or inspect the resulting DOM / error state directly
-with `text`/`html`/`screenshot` — often the visible symptom tells you what you
-need without the raw log line.
+The hook's output is a JSON array, so it composes with `jq` and with `roddy
+assert`; `roddy logs` is the one to reach for otherwise.
 
 ### Inspect network requests
 
-Also no dedicated network command — but the browser's Resource Timing API
+There is no dedicated network command — but the browser's Resource Timing API
 already recorded every request made during load, so you can read it back
 directly (this *does* capture load-time requests):
 
