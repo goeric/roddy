@@ -7,8 +7,10 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -123,7 +125,10 @@ func readManifest(dir string) (manifest, error) {
 	var m manifest
 	data, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
 	if err != nil {
-		return m, fmt.Errorf("no manifest.json in %s", dir)
+		if errors.Is(err, fs.ErrNotExist) {
+			return m, fmt.Errorf("no manifest.json in %s", dir)
+		}
+		return m, fmt.Errorf("cannot read manifest.json in %s: %v", dir, err)
 	}
 	if err := json.Unmarshal(data, &m); err != nil {
 		return m, fmt.Errorf("invalid manifest.json in %s: %v", dir, err)

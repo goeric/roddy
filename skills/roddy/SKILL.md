@@ -146,7 +146,8 @@ drive the page, assert on both sides. For a WXT project plain `roddy start` in
 the project root is enough: when `wxt.config.*` and a built `.output/chrome-mv3`
 are present it loads the extension and prints a notice (`--no-extension` opts
 out, an explicit `--extension` always wins). If it reports the build output
-missing, run `wxt build` first.
+missing, run `wxt build` first; if a build is there but cannot be loaded, start
+prints why on stderr and continues without the extension.
 
 ### Extension storage without writing JS
 

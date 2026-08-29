@@ -49,8 +49,12 @@ auto-detects a WXT project (`wxt.config.*` in the cwd plus a built
 the two flags together are an error. Config without a build prints a
 "run wxt build" hint on stderr and starts without an extension. When
 auto-scoping would use the global session, a one-line tip suggests `--local`
-(never overriding an explicit --local/--global or RODDY_HOME). The stale-build
-warning was ruled out of scope. The original design notes follow.
+(never second-guessing an explicit --local/--global or RODDY_HOME). Detection
+commits to nothing it has not resolved: a build output that is present but
+unloadable (mid-write, no manifest, unreadable) prints the real error as a hint
+and start continues without an extension, so the auto path can never make a
+plain `roddy start` fail. The stale-build warning was ruled out of scope. The
+original design notes follow.
 
 WXT builds an unpacked MV3 extension at `.output/chrome-mv3`. Today users type
 `roddy start --extension .output/chrome-mv3` (documented in the README). The

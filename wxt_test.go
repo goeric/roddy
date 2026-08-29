@@ -42,6 +42,8 @@ func TestDetectWXT(t *testing.T) {
 		{"js config", "wxt.config.js", true, wxtBuilt},
 		{"mts config", "wxt.config.mts", true, wxtBuilt},
 		{"mjs config", "wxt.config.mjs", true, wxtBuilt},
+		{"cts config", "wxt.config.cts", true, wxtBuilt},
+		{"cjs config", "wxt.config.cjs", true, wxtBuilt},
 		{"unrelated config name", "vite.config.ts", true, wxtNone},
 	}
 	for _, c := range cases {
@@ -50,58 +52,124 @@ func TestDetectWXT(t *testing.T) {
 		}
 	}
 
-	// A build output alone is not a WXT project (it could be any unpacked
-	// extension someone copied in), and a half-deleted output with no manifest
-	// counts as unbuilt so the auto path never hands Chrome a broken directory.
-	dir := writeWXTProject(t, "", true)
-	if got := detectWXT(dir); got != wxtNone {
+	// A build output alone is not a WXT project — it could be any unpacked
+	// extension someone copied in.
+	if got := detectWXT(writeWXTProject(t, "", true)); got != wxtNone {
 		t.Errorf("output without config: got %v, want wxtNone", got)
 	}
-	dir = writeWXTProject(t, "wxt.config.ts", true)
+	// Detection stops at the directory: an output with no manifest is still a
+	// candidate here, and wxtStart is what turns it down (see TestWXTStart).
+	dir := writeWXTProject(t, "wxt.config.ts", true)
 	if err := os.Remove(filepath.Join(dir, ".output", "chrome-mv3", "manifest.json")); err != nil {
 		t.Fatal(err)
 	}
-	if got := detectWXT(dir); got != wxtUnbuilt {
-		t.Errorf("output without manifest: got %v, want wxtUnbuilt", got)
+	if got := detectWXT(dir); got != wxtBuilt {
+		t.Errorf("output without manifest: got %v, want wxtBuilt", got)
 	}
 }
 
-func TestWXTAuto(t *testing.T) {
-	base := startOptions{headless: true}
+func TestWXTStart_UserAlreadyDecided(t *testing.T) {
+	built := writeWXTProject(t, "wxt.config.ts", true)
+	unbuilt := writeWXTProject(t, "wxt.config.ts", false)
 	explicit := startOptions{headless: true, extensions: []string{"./my-ext"}}
 	optedOut := startOptions{headless: true, noExtension: true}
 
-	path, notice, hint := wxtAuto(base, wxtBuilt)
-	if path != wxtChromeOutput {
-		t.Errorf("built: got path %q, want %q", path, wxtChromeOutput)
+	cases := []struct {
+		name string
+		opts startOptions
+		dir  string
+	}{
+		{"explicit --extension", explicit, built},
+		{"explicit --extension, unbuilt", explicit, unbuilt},
+		{"--no-extension", optedOut, built},
+		{"--no-extension, unbuilt", optedOut, unbuilt},
 	}
-	if !strings.Contains(notice, "WXT project detected") || !strings.Contains(notice, "--no-extension") {
-		t.Errorf("notice should name the detection and the opt-out: %q", notice)
+	for _, c := range cases {
+		out, notice, hint := wxtStart(c.opts, c.dir, t.TempDir())
+		if notice != "" || hint != "" {
+			t.Errorf("%s: got notice %q hint %q, want silence", c.name, notice, hint)
+		}
+		if len(out.extensions) != len(c.opts.extensions) {
+			t.Errorf("%s: extensions changed: %v", c.name, out.extensions)
+		}
 	}
+}
+
+func TestWXTStart_NoProject(t *testing.T) {
+	base := startOptions{headless: true}
+	out, notice, hint := wxtStart(base, writeWXTProject(t, "", false), t.TempDir())
+	if notice != "" || hint != "" || len(out.extensions) != 0 {
+		t.Errorf("no project: got %v %q %q, want silence", out.extensions, notice, hint)
+	}
+}
+
+func TestWXTStart_Unbuilt(t *testing.T) {
+	base := startOptions{headless: true}
+	out, notice, hint := wxtStart(base, writeWXTProject(t, "wxt.config.ts", false), t.TempDir())
+	if notice != "" || len(out.extensions) != 0 {
+		t.Errorf("unbuilt: got extensions %v notice %q, want neither", out.extensions, notice)
+	}
+	for _, want := range []string{"WXT project detected", wxtChromeOutput, "wxt build"} {
+		if !strings.Contains(hint, want) {
+			t.Errorf("hint %q does not mention %q", hint, want)
+		}
+	}
+}
+
+func TestWXTStart_Built(t *testing.T) {
+	base := startOptions{headless: true}
+	dir := writeWXTProject(t, "wxt.config.ts", true)
+	out, notice, hint := wxtStart(base, dir, t.TempDir())
 	if hint != "" {
 		t.Errorf("built: unexpected hint %q", hint)
 	}
+	for _, want := range []string{"WXT project detected", wxtChromeOutput, "--no-extension"} {
+		if !strings.Contains(notice, want) {
+			t.Errorf("notice %q does not mention %q", notice, want)
+		}
+	}
+	if len(out.extensions) != 1 {
+		t.Fatalf("built: got extensions %v, want exactly one", out.extensions)
+	}
+	if _, err := os.Stat(filepath.Join(out.extensions[0], "manifest.json")); err != nil {
+		t.Errorf("appended path is not the loadable build output: %v", err)
+	}
+}
 
-	path, notice, hint = wxtAuto(base, wxtUnbuilt)
-	if path != "" || notice != "" {
-		t.Errorf("unbuilt: got path %q notice %q, want neither", path, notice)
-	}
-	if !strings.Contains(hint, "wxt build") {
-		t.Errorf("hint should say how to build: %q", hint)
+// A build output that exists but cannot be loaded must not reach loadExtensions,
+// which would turn a plain "roddy start" into a fatal error.
+func TestWXTStart_BrokenBuildDegrades(t *testing.T) {
+	base := startOptions{headless: true}
+
+	corrupt := writeWXTProject(t, "wxt.config.ts", true)
+	manifest := filepath.Join(corrupt, ".output", "chrome-mv3", "manifest.json")
+	if err := os.WriteFile(manifest, []byte("{ not json"), 0644); err != nil {
+		t.Fatal(err)
 	}
 
-	if path, notice, hint = wxtAuto(base, wxtNone); path != "" || notice != "" || hint != "" {
-		t.Errorf("no project: got %q %q %q, want silence", path, notice, hint)
+	noManifest := writeWXTProject(t, "wxt.config.ts", true)
+	if err := os.Remove(filepath.Join(noManifest, ".output", "chrome-mv3", "manifest.json")); err != nil {
+		t.Fatal(err)
 	}
-	// An explicit --extension or --no-extension means the user already decided.
-	if path, notice, hint = wxtAuto(explicit, wxtBuilt); path != "" || notice != "" || hint != "" {
-		t.Errorf("explicit --extension: got %q %q %q, want silence", path, notice, hint)
+
+	cases := []struct {
+		name string
+		dir  string
+		want string // the underlying resolveExtension failure
+	}{
+		{"corrupt manifest", corrupt, "invalid manifest.json"},
+		{"missing manifest", noManifest, "no manifest.json"},
 	}
-	if path, notice, hint = wxtAuto(optedOut, wxtBuilt); path != "" || notice != "" || hint != "" {
-		t.Errorf("--no-extension: got %q %q %q, want silence", path, notice, hint)
-	}
-	if path, notice, hint = wxtAuto(optedOut, wxtUnbuilt); path != "" || notice != "" || hint != "" {
-		t.Errorf("--no-extension unbuilt: got %q %q %q, want silence", path, notice, hint)
+	for _, c := range cases {
+		out, notice, hint := wxtStart(base, c.dir, t.TempDir())
+		if notice != "" || len(out.extensions) != 0 {
+			t.Errorf("%s: got extensions %v notice %q, want neither", c.name, out.extensions, notice)
+		}
+		for _, want := range []string{"WXT project detected", wxtChromeOutput, "--no-extension", c.want} {
+			if !strings.Contains(hint, want) {
+				t.Errorf("%s: hint %q does not mention %q", c.name, hint, want)
+			}
+		}
 	}
 }
 

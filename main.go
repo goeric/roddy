@@ -481,11 +481,14 @@ func cmdStart(args []string) {
 
 	// A WXT project's build output is the extension: load it unasked, saying
 	// so, unless the user already decided with --extension or --no-extension.
-	if path, notice, hint := wxtAuto(opts, detectWXT(".")); hint != "" {
-		fmt.Fprintln(os.Stderr, hint)
-	} else if path != "" {
-		opts.extensions = append(opts.extensions, path)
-		fmt.Println(notice)
+	// wxtStart resolves the build before amending opts, so the notice only
+	// promises what loaded and a broken build never fatals a plain start.
+	// The unpack root is loadExtensions', which resolves the same paths later.
+	opts, wxtNotice, wxtHint := wxtStart(opts, ".", filepath.Join(stateDir(), "extensions"))
+	if wxtHint != "" {
+		fmt.Fprintln(os.Stderr, wxtHint)
+	} else if wxtNotice != "" {
+		fmt.Println(wxtNotice)
 		if wd, err := os.Getwd(); err == nil &&
 			wxtTipWanted(activeScopeMode, os.Getenv("RODDY_HOME"), stateDir(), filepath.Join(wd, ".roddy")) {
 			fmt.Println(wxtLocalTip)
