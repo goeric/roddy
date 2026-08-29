@@ -1280,3 +1280,34 @@ func handleLogsPage(w http.ResponseWriter, r *http.Request) {
 </body>
 </html>`))
 }
+
+// --- adjustActivePage ---
+
+func TestAdjustActivePage(t *testing.T) {
+	cases := []struct {
+		name                  string
+		active, closed, count int
+		want                  int
+	}{
+		// Closing a lower-indexed page shifts the rest down; the active page
+		// keeps pointing at the same page only if the index follows it.
+		{"close below active", 2, 0, 3, 1},
+		{"close just below active", 2, 1, 3, 1},
+		{"close above active", 1, 2, 3, 1},
+		{"close the active page mid-list", 1, 1, 3, 1},
+		{"close the active last page", 2, 2, 3, 1},
+		{"active beyond new end", 1, 1, 2, 0},
+		{"close above from zero", 0, 1, 2, 0},
+		{"close below with two pages", 1, 0, 2, 0},
+		{"close active of two", 0, 0, 2, 0},
+		// A stale index (something else closed pages) self-heals into range.
+		{"stale out-of-range", 9, 0, 3, 1},
+		{"stale out-of-range, close tail", 9, 2, 3, 1},
+	}
+	for _, c := range cases {
+		if got := adjustActivePage(c.active, c.closed, c.count); got != c.want {
+			t.Errorf("%s: adjustActivePage(%d, %d, %d) = %d, want %d",
+				c.name, c.active, c.closed, c.count, got, c.want)
+		}
+	}
+}
