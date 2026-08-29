@@ -441,7 +441,9 @@ func cmdStart(args []string) {
 	if s, err := loadState(); err == nil {
 		// Try connecting
 		if b, err := connectBrowser(s); err == nil {
-			b.MustClose()
+			// Best effort: a half-dead old browser must not block starting a
+			// new one. (rod's Browser.MustClose is the same discard.)
+			_ = b.Close()
 			// It was actually running, warn
 			removeState()
 		}
@@ -638,8 +640,14 @@ func cmdStop(args []string) {
 			}
 		}
 	} else if s.ChromePID > 0 {
-		// Only close (and kill) the browser if we launched it
-		browser.MustClose()
+		// Only close (and kill) the browser if we launched it. If the polite
+		// close fails, fall back to the signal — otherwise Chrome survives
+		// while the state that knows its PID is about to be removed.
+		if err := browser.Close(); err != nil {
+			if proc, err := os.FindProcess(s.ChromePID); err == nil {
+				proc.Signal(syscall.SIGTERM)
+			}
+		}
 	}
 	// If ChromePID==0 we connected to an external browser; just clear state without closing it
 	// Also kill the proxy helper if running
@@ -731,9 +739,7 @@ func cmdOpen(args []string) {
 			fatal("navigation failed: %v", err)
 		}
 	}
-	if err := page.WaitLoad(); err != nil {
-		fatal("page did not finish loading: %v", err)
-	}
+	waitLoaded(page)
 	info, _ := page.Info()
 	if info != nil {
 		fmt.Println(info.Title)
@@ -823,11 +829,11 @@ func cmdHTML(args []string) {
 		}
 		fmt.Println(html)
 	} else {
-		html, err := page.Eval(`() => document.documentElement.outerHTML`)
+		res, err := page.Eval(`() => document.documentElement.outerHTML`)
 		if err != nil {
 			fatal("failed to get HTML: %v", err)
 		}
-		fmt.Println(html.Value.Str())
+		fmt.Println(res.Value.Str())
 	}
 }
 
@@ -1268,7 +1274,7 @@ func cmdWaitLoad(args []string) {
 func cmdWaitStable(args []string) {
 	_, _, page := withPage()
 	if err := page.WaitStable(time.Second); err != nil {
-		fatal("wait failed: %v", err)
+		fatal("waitstable failed: %v", err)
 	}
 	fmt.Println("DOM stable")
 }
@@ -1276,7 +1282,7 @@ func cmdWaitStable(args []string) {
 func cmdWaitIdle(args []string) {
 	_, _, page := withPage()
 	if err := page.WaitIdle(time.Minute); err != nil {
-		fatal("wait failed: %v", err)
+		fatal("waitidle failed: %v", err)
 	}
 	fmt.Println("Network idle")
 }
@@ -1468,9 +1474,7 @@ func cmdNewPage(args []string) {
 		fatal("failed to open page: %v", err)
 	}
 	if url != "" {
-		if err := page.WaitLoad(); err != nil {
-			fatal("page did not finish loading: %v", err)
-		}
+		waitLoaded(page)
 	}
 
 	// Switch active to the new page
