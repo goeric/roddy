@@ -215,6 +215,7 @@ browser-generated entries such as network failures are included.
 
 ```bash
 roddy logs                  # snapshot: replayed console output, then exit
+roddy logs --timeout 10s    # collect for up to 10s (default 5s)
 roddy logs --follow         # keep streaming live output until Ctrl+C
 roddy logs --sw             # an extension service worker's console instead
 roddy logs --sw --ext ID    # pick one extension when several are loaded
@@ -222,14 +223,26 @@ roddy logs --sw --ext ID    # pick one extension when several are loaded
 
 A service worker has no DOM, so its console is often the only way to see what
 it did — `roddy logs --sw` right after `roddy start --extension` shows the
-worker's startup output.
+worker's startup output. A worker Chrome suspended and later restarted is a new
+target with an empty buffer, so that early window is the reliable one.
 
 Notes:
 
-- Replayed object arguments print as `Object` — Chrome's buffer keeps only a
-  description. Live output under `--follow` shows a one-level preview like
+- Replayed object arguments print as `Object` — Chrome's buffer keeps no
+  preview. Live output under `--follow` shows a one-level preview like
   `{a: 1, b: "x"}`.
-- A page with an empty console prints nothing and exits 0.
+- A snapshot sorts what it collects by timestamp, because Chrome replays the
+  console buffer and the browser log buffer as two separate bursts. `--follow`
+  prints events as they arrive, so its replayed prefix comes out as those two
+  unsorted bursts before the live stream begins.
+- `--timeout` (default 5s) bounds a snapshot: it returns once the output has
+  been quiet for a moment, or once the timeout is up. A page that logs
+  continuously hits the timeout, prints what it collected, and says so on
+  stderr — `--follow` is the way to keep reading. With `--sw` the same flag
+  also bounds the wait for the worker to appear.
+- A page with an empty console prints nothing and exits 0. A stream that ends
+  on its own — the tab was closed, or the browser went away — reports the
+  reason on stderr and exits 2.
 
 ### Navigate
 

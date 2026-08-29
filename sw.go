@@ -207,8 +207,9 @@ func evalInServiceWorker(browser *rod.Browser, sw swTarget, expr string) (gson.J
 
 // exceptionDetail extracts the most useful description of a thrown value. A
 // thrown or rejected primitive carries no Description, only a Value — and null
-// and undefined do not even have that. Without them the message is a bare
-// "Uncaught (in promise)" with no reason at all.
+// and undefined do not even have that. Without these fallbacks the message is a
+// bare "Uncaught" or "Uncaught (in promise)" with no reason at all, for a page's
+// uncaught exceptions as much as for an evaluation's.
 func exceptionDetail(d *proto.RuntimeExceptionDetails) string {
 	if ex := d.Exception; ex != nil {
 		switch {
@@ -318,12 +319,8 @@ func parseSWFlags(args []string) (ext string, timeout time.Duration, rest []stri
 			rest = append(rest, args[i])
 			continue
 		}
-		if !inline {
-			if i+1 == len(args) {
-				return "", 0, nil, fmt.Errorf("flag needs an argument: %s", name)
-			}
-			i++
-			value = args[i]
+		if value, i, err = takeFlagValue(args, i, name, value, inline); err != nil {
+			return "", 0, nil, err
 		}
 		switch name {
 		case "--ext", "-ext":

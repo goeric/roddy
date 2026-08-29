@@ -2,16 +2,23 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/go-rod/rod"
+	"github.com/go-rod/rod/lib/cdp"
 	"github.com/go-rod/rod/lib/proto"
 )
 
 const logsUsage = "usage: roddy logs [--follow|-f] [--sw] [--ext ID] [--timeout DUR]"
+
+// logsSettle is how long a snapshot waits for the stream to stay quiet before
+// calling the replay complete.
+const logsSettle = 600 * time.Millisecond
 
 // logLine is one console message, exception, or browser log entry.
 type logLine struct {
@@ -33,33 +40,39 @@ func parseLogsFlags(args []string) (logsFlags, error) {
 	for i := 0; i < len(args); i++ {
 		name, value, inline := strings.Cut(args[i], "=")
 		switch name {
+		// The bool flags carry no value, the way every other bool in the CLI
+		// works: "--follow=false" is a mistake, not a way to turn one off.
 		case "--follow", "-follow", "-f":
+			if inline {
+				return logsFlags{}, fmt.Errorf("flag %s does not take a value", name)
+			}
 			f.follow = true
 			continue
 		case "--sw", "-sw":
+			if inline {
+				return logsFlags{}, fmt.Errorf("flag %s does not take a value", name)
+			}
 			f.sw = true
 			continue
 		case "--ext", "-ext", "--timeout", "-timeout":
 		default:
 			return logsFlags{}, fmt.Errorf("unknown argument: %s", args[i])
 		}
-		if !inline {
-			if i+1 == len(args) {
-				return logsFlags{}, fmt.Errorf("flag needs an argument: %s", name)
-			}
-			i++
-			value = args[i]
+		var err error
+		if value, i, err = takeFlagValue(args, i, name, value, inline); err != nil {
+			return logsFlags{}, err
 		}
-		if strings.HasSuffix(name, "ext") {
+		switch name {
+		case "--ext", "-ext":
+			// An unset shell variable would otherwise read as "no filter".
 			if value == "" {
-				return logsFlags{}, fmt.Errorf("flag --ext needs a non-empty value")
+				return logsFlags{}, fmt.Errorf("flag %s needs a non-empty value", name)
 			}
 			f.ext = value
-			continue
-		}
-		var err error
-		if f.timeout, err = time.ParseDuration(value); err != nil {
-			return logsFlags{}, fmt.Errorf("invalid value %q for flag %s: %w", value, name, err)
+		default: // --timeout, -timeout
+			if f.timeout, err = time.ParseDuration(value); err != nil {
+				return logsFlags{}, fmt.Errorf("invalid value %q for flag %s: %w", value, name, err)
+			}
 		}
 	}
 	if f.ext != "" && !f.sw {
@@ -68,25 +81,58 @@ func parseLogsFlags(args []string) (logsFlags, error) {
 	return f, nil
 }
 
-// openLogStream attaches its own flat session to the target and returns a
-// channel of console messages, uncaught exceptions, and browser log entries.
-// The subscriptions are registered BEFORE the domains are enabled: Chrome
-// replays buffered events on enable, and delivers them only once per session —
-// a session someone else enabled first (rod's own Pages() attach, say) has
-// already spent its replay, which is why this never reuses an existing one.
-// The stream closes when ctx is cancelled.
-func openLogStream(ctx context.Context, browser *rod.Browser, targetID proto.TargetTargetID) (<-chan logLine, error) {
-	att, err := proto.TargetAttachToTarget{TargetID: targetID, Flatten: true}.Call(browser)
-	if err != nil {
-		return nil, fmt.Errorf("failed to attach to target: %w", err)
-	}
+// logStream is an open subscription to one target's console output. Its lines
+// channel is closed when the stream ends, whether because the caller cancelled
+// the context, the target went away, or the browser connection did.
+type logStream struct {
+	lines        <-chan logLine
+	targetClosed bool
+}
 
-	b := browser.Context(ctx)
+// endReason says why the stream stopped. It is only meaningful once lines is
+// closed: the flag is written before that close, which is what publishes it.
+func (s *logStream) endReason() string {
+	if s.targetClosed {
+		return "target closed"
+	}
+	return "browser connection lost"
+}
+
+// openLogStream attaches its own flat session to the target and streams that
+// target's console messages, uncaught exceptions, and browser log entries.
+//
+// The subscriptions are registered BEFORE the domains are enabled: Chrome
+// replays its buffered events on enable, so a subscription registered after
+// the enable can miss the whole replay.
+//
+// The session is a dedicated one rather than one rod already opened, because
+// replay only fires on a disable→enable transition: enabling a domain some
+// other code already enabled replays nothing. A private session also keeps
+// rod's domain enable/restore bookkeeping — which acts on the sessions it owns
+// — from disabling Runtime in the middle of the stream.
+//
+// The stream closes when ctx is cancelled, when the target is closed or
+// detached, or when the browser connection ends.
+func openLogStream(ctx context.Context, browser *rod.Browser, targetID proto.TargetTargetID) (*logStream, error) {
+	// A wedged target answers no CDP call, so the setup gets a deadline. The
+	// event wait below deliberately does not: it runs for the whole stream.
+	setup := browser.Timeout(defaultTimeout)
+	att, err := proto.TargetAttachToTarget{TargetID: targetID, Flatten: true}.Call(setup)
+	if err != nil {
+		return nil, logSetupErr("failed to attach to target", err)
+	}
+	// The attachment is never detached: it lasts as long as the process, and
+	// while following a worker it usefully pins the worker awake. Contrast
+	// evalInServiceWorker, which detaches so repeated calls do not.
+
+	ctx, cancel := context.WithCancel(ctx)
 	ch := make(chan logLine, 256)
+	s := &logStream{lines: ch}
+
 	// EachEvent subscribes when called, not when its wait func runs — the call
 	// must complete before the enables below, or the replay races the
 	// subscription and can be lost. Only the blocking wait goes in a goroutine.
-	wait := b.EachEvent(
+	wait := browser.Context(ctx).EachEvent(
 		func(e *proto.RuntimeConsoleAPICalled, sid proto.TargetSessionID) {
 			if sid == att.SessionID {
 				ch <- logLine{e.Timestamp, formatConsoleEvent(e)}
@@ -102,17 +148,104 @@ func openLogStream(ctx context.Context, browser *rod.Browser, targetID proto.Tar
 				ch <- logLine{e.Entry.Timestamp, formatLogEntry(e.Entry)}
 			}
 		},
+		// A closed tab or a stopped worker sends nothing more, so the stream has
+		// to end itself rather than wait forever for the next line.
+		func(e *proto.TargetDetachedFromTarget) {
+			if e.SessionID == att.SessionID {
+				s.targetClosed = true
+				cancel()
+			}
+		},
+		func(e *proto.TargetTargetDestroyed) {
+			if e.TargetID == targetID {
+				s.targetClosed = true
+				cancel()
+			}
+		},
 	)
-	go wait()
+	// rod invokes the callbacks synchronously inside wait and returns only once
+	// the context or the connection has ended, so nothing can send on ch after
+	// wait returns and closing there is safe.
+	go func() {
+		wait()
+		cancel()
+		close(ch)
+	}()
 
-	sess := browser.PageFromSession(att.SessionID)
+	sess := setup.PageFromSession(att.SessionID)
 	if err := (proto.RuntimeEnable{}).Call(sess); err != nil {
-		return nil, fmt.Errorf("failed to enable console events: %w", err)
+		cancel()
+		return nil, logSetupErr("failed to enable console events", err)
 	}
 	// The Log domain covers network failures and browser-generated warnings.
-	// Worker targets do not support it, so its absence is not an error.
-	_ = (proto.LogEnable{}).Call(sess)
-	return ch, nil
+	// Chrome supports it on pages and on workers; a browser reached through
+	// ROD_CHROME_BIN that does not answers "method not found", and losing those
+	// entries beats refusing to stream. Any other failure is real: the stream
+	// would silently drop output it promises.
+	if err := (proto.LogEnable{}).Call(sess); err != nil && !isMethodNotFound(err) {
+		cancel()
+		return nil, logSetupErr("failed to enable browser log events", err)
+	}
+	return s, nil
+}
+
+// logSetupErr keeps a stalled target apart from an outright failure: a page
+// spinning in a busy loop answers nothing, and a bare "context deadline
+// exceeded" says neither which call gave up nor that the limit is raisable.
+func logSetupErr(what string, err error) error {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("%s: timed out after %s (is the target busy?); ROD_TIMEOUT raises the limit", what, defaultTimeout)
+	}
+	return fmt.Errorf("%s: %w", what, err)
+}
+
+// isMethodNotFound reports whether err is CDP's "method not found" — how a
+// browser answers a domain or command it does not implement.
+func isMethodNotFound(err error) bool {
+	var e *cdp.Error
+	if !errors.As(err, &e) {
+		return false
+	}
+	return e.Code == -32601 || strings.Contains(e.Message, "wasn't found")
+}
+
+// snapshotEnd says why snapshotLines stopped gathering.
+type snapshotEnd int
+
+const (
+	snapshotSettled  snapshotEnd = iota // the stream went quiet: the replay is complete
+	snapshotDeadline                    // lines were still arriving when the deadline hit
+	snapshotClosed                      // the target or the browser went away
+)
+
+// snapshotLines gathers a stream until it stays quiet for settle, until the
+// overall deadline elapses, or until it closes — whichever comes first. The
+// deadline is what makes a chatty page terminate at all: a page logging every
+// few hundred milliseconds resets the quiet window forever.
+func snapshotLines(ch <-chan logLine, settle, deadline time.Duration) ([]logLine, snapshotEnd) {
+	var lines []logLine
+	end := snapshotSettled
+	expire := time.After(deadline)
+gather:
+	for {
+		select {
+		case l, ok := <-ch:
+			if !ok {
+				end = snapshotClosed
+				break gather
+			}
+			lines = append(lines, l)
+		case <-time.After(settle):
+			break gather
+		case <-expire:
+			end = snapshotDeadline
+			break gather
+		}
+	}
+	// Runtime and Log replay as separate bursts rather than interleaved, so the
+	// buffered output only reads in order once sorted by timestamp.
+	sort.SliceStable(lines, func(i, j int) bool { return lines[i].ts < lines[j].ts })
+	return lines, end
 }
 
 // formatConsoleEvent renders one console.* call: "[level] arg arg ...".
@@ -125,8 +258,10 @@ func formatConsoleEvent(e *proto.RuntimeConsoleAPICalled) string {
 }
 
 // formatConsoleArg renders one console argument. Console events carry objects
-// by reference with a one-level preview rather than a full value, so this
-// falls through value → preview → description rather than assuming Value.
+// by reference rather than by value, so this falls through value → preview →
+// description. Live events supply a one-level preview; a replayed event's args
+// carry the reference and a description but no preview, which is what makes
+// the description fallback the one the replay exercises.
 func formatConsoleArg(a *proto.RuntimeRemoteObject) string {
 	switch {
 	case a.UnserializableValue != "":
@@ -182,8 +317,9 @@ func formatLogEntry(e *proto.LogLogEntry) string {
 }
 
 // cmdLogs handles "roddy logs": print the target's console output. The default
-// is a snapshot — Chrome's replay of buffered events plus a short settle window
-// — while --follow keeps streaming until interrupted.
+// is a snapshot — Chrome's replay of buffered events plus a short settle
+// window, bounded by --timeout — while --follow keeps streaming until the
+// target, the browser, or the process goes away.
 func cmdLogs(args []string) {
 	f, err := parseLogsFlags(args)
 	if err != nil {
@@ -212,42 +348,40 @@ func cmdLogs(args []string) {
 		}
 		targetID = sw.TargetID
 	} else {
-		page, err := getActivePage(browser, s)
+		// Listing pages talks to every target, so a wedged one would hang this
+		// before the stream is even open.
+		page, err := getActivePage(browser.Timeout(defaultTimeout), s)
 		if err != nil {
-			fatal("%v", err)
+			fatal("%v", logSetupErr("failed to find the active page", err))
 		}
-		targetID = proto.TargetTargetID(page.TargetID)
+		targetID = page.TargetID
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	ch, err := openLogStream(ctx, browser, targetID)
+	stream, err := openLogStream(ctx, browser, targetID)
 	if err != nil {
 		fatal("%v", err)
 	}
 
 	if f.follow {
 		// Replay first, then live events, until the process is interrupted.
-		for line := range ch {
+		for line := range stream.lines {
 			fmt.Println(line.text)
 		}
-		return
+		// Reaching here means the stream ended on its own, which is a failure:
+		// a normal --follow only ends by signal.
+		fatal("%s", stream.endReason())
 	}
 
-	// Snapshot: gather the replay until the stream stays quiet, then order by
-	// timestamp — Runtime and Log replay as separate bursts, not interleaved.
-	var lines []logLine
-	for {
-		select {
-		case l := <-ch:
-			lines = append(lines, l)
-			continue
-		case <-time.After(600 * time.Millisecond):
-		}
-		break
-	}
-	sort.SliceStable(lines, func(i, j int) bool { return lines[i].ts < lines[j].ts })
+	lines, end := snapshotLines(stream.lines, logsSettle, f.timeout)
 	for _, l := range lines {
 		fmt.Println(l.text)
+	}
+	switch end {
+	case snapshotDeadline:
+		fmt.Fprintf(os.Stderr, "(output still streaming after %s; use --follow)\n", f.timeout)
+	case snapshotClosed:
+		fatal("%s", stream.endReason())
 	}
 }

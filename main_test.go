@@ -54,6 +54,8 @@ func TestMain(m *testing.M) {
 	mux.HandleFunc("/sw-page", handleSWPage)
 	mux.HandleFunc("/page-sw.js", handlePageSW)
 	mux.HandleFunc("/logs-page", handleLogsPage)
+	// The "/" handler answers every unregistered path, so a 404 has to be one.
+	mux.HandleFunc("/missing-resource", http.NotFound)
 	server := httptest.NewServer(mux)
 
 	env = &testEnv{browser: browser, server: server}
@@ -1260,7 +1262,9 @@ func TestNormalizeOpenURL(t *testing.T) {
 }
 
 // handleLogsPage serves a page that logs before any debugger attaches, so the
-// log-stream tests can prove Chrome replays buffered console output.
+// log-stream tests can prove Chrome replays buffered console output. The failed
+// fetch is reported by the Log domain rather than Runtime, which is what covers
+// the second subscription.
 func handleLogsPage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html")
 	w.Write([]byte(`<!DOCTYPE html>
@@ -1270,6 +1274,7 @@ func handleLogsPage(w http.ResponseWriter, r *http.Request) {
   <script>
     console.log("fixture log", 7);
     console.warn("fixture warning");
+    fetch("/missing-resource");
     setTimeout(() => { throw new Error("fixture boom"); }, 50);
   </script>
 </body>
