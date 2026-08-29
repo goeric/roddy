@@ -166,6 +166,24 @@ func fatal(format string, args ...interface{}) {
 	os.Exit(2)
 }
 
+// waitLoaded reports a load that never finishes as an error instead of a
+// panic; the Must* forms dump a Go stack trace at the user.
+func waitLoaded(page *rod.Page) {
+	if err := page.WaitLoad(); err != nil {
+		fatal("page did not finish loading: %v", err)
+	}
+}
+
+// typeInto replaces an input's content, clearing it when text is empty.
+func typeInto(el *rod.Element, text string) {
+	if err := el.SelectAllText(); err != nil {
+		fatal("failed to select the existing text: %v", err)
+	}
+	if err := el.Input(text); err != nil {
+		fatal("input failed: %v", err)
+	}
+}
+
 // takeFlagValue resolves the value of a flag that takes one, in either the
 // "--flag=VAL" form the caller has already split off or the "--flag VAL" form
 // that consumes the next argument. next is the index the loop should continue
@@ -496,7 +514,10 @@ func cmdStart(args []string) {
 		l.Set("ignore-certificate-errors")
 	}
 
-	debugURL := l.MustLaunch()
+	debugURL, err := l.Launch()
+	if err != nil {
+		fatal("failed to launch Chrome: %v", err)
+	}
 
 	// Get Chrome PID from the launcher
 	pid := l.PID()
@@ -721,8 +742,10 @@ func cmdOpen(args []string) {
 
 func cmdBack(args []string) {
 	_, _, page := withPage()
-	page.MustNavigateBack()
-	page.MustWaitLoad()
+	if err := page.NavigateBack(); err != nil {
+		fatal("back failed: %v", err)
+	}
+	waitLoaded(page)
 	info, _ := page.Info()
 	if info != nil {
 		fmt.Println(info.URL)
@@ -731,8 +754,10 @@ func cmdBack(args []string) {
 
 func cmdForward(args []string) {
 	_, _, page := withPage()
-	page.MustNavigateForward()
-	page.MustWaitLoad()
+	if err := page.NavigateForward(); err != nil {
+		fatal("forward failed: %v", err)
+	}
+	waitLoaded(page)
 	info, _ := page.Info()
 	if info != nil {
 		fmt.Println(info.URL)
@@ -751,10 +776,10 @@ func cmdReload(args []string) {
 		if err != nil {
 			fatal("reload failed: %v", err)
 		}
-	} else {
-		page.MustReload()
+	} else if err := page.Reload(); err != nil {
+		fatal("reload failed: %v", err)
 	}
-	page.MustWaitLoad()
+	waitLoaded(page)
 	fmt.Println("Reloaded")
 }
 
@@ -798,8 +823,11 @@ func cmdHTML(args []string) {
 		}
 		fmt.Println(html)
 	} else {
-		html := page.MustEval(`() => document.documentElement.outerHTML`).Str()
-		fmt.Println(html)
+		html, err := page.Eval(`() => document.documentElement.outerHTML`)
+		if err != nil {
+			fatal("failed to get HTML: %v", err)
+		}
+		fmt.Println(html.Value.Str())
 	}
 }
 
@@ -828,7 +856,10 @@ func cmdAttr(args []string) {
 	if err != nil {
 		fatal("element not found: %v", err)
 	}
-	val := el.MustAttribute(args[1])
+	val, err := el.Attribute(args[1])
+	if err != nil {
+		fatal("failed to read attribute: %v", err)
+	}
 	if val == nil {
 		fatal("attribute %q not found", args[1])
 	}
@@ -931,7 +962,7 @@ func cmdInput(args []string) {
 		fatal("element not found: %v", err)
 	}
 	text := strings.Join(args[1:], " ")
-	el.MustSelectAllText().MustInput(text)
+	typeInto(el, text)
 	fmt.Printf("Typed: %s\n", text)
 }
 
@@ -944,7 +975,7 @@ func cmdClear(args []string) {
 	if err != nil {
 		fatal("element not found: %v", err)
 	}
-	el.MustSelectAllText().MustInput("")
+	typeInto(el, "")
 	fmt.Println("Cleared")
 }
 
@@ -1006,10 +1037,17 @@ func cmdDownload(args []string) {
 	}
 
 	// Get the URL from the element's href or src attribute
+	attr := func(name string) *string {
+		v, err := el.Attribute(name)
+		if err != nil {
+			fatal("failed to read %s: %v", name, err)
+		}
+		return v
+	}
 	urlStr := ""
-	if v := el.MustAttribute("href"); v != nil {
+	if v := attr("href"); v != nil {
 		urlStr = *v
-	} else if v := el.MustAttribute("src"); v != nil {
+	} else if v := attr("src"); v != nil {
 		urlStr = *v
 	} else {
 		fatal("element has no href or src attribute")
@@ -1170,7 +1208,9 @@ func cmdSubmit(args []string) {
 	if err != nil {
 		fatal("form not found: %v", err)
 	}
-	page.MustEval(fmt.Sprintf(`() => document.querySelector(%q).submit()`, args[0]))
+	if _, err := page.Eval(fmt.Sprintf(`() => document.querySelector(%q).submit()`, args[0])); err != nil {
+		fatal("submit failed: %v", err)
+	}
 	fmt.Println("Submitted")
 }
 
@@ -1183,7 +1223,9 @@ func cmdHover(args []string) {
 	if err != nil {
 		fatal("element not found: %v", err)
 	}
-	el.MustHover()
+	if err := el.Hover(); err != nil {
+		fatal("hover failed: %v", err)
+	}
 	fmt.Println("Hovered")
 }
 
@@ -1196,7 +1238,9 @@ func cmdFocus(args []string) {
 	if err != nil {
 		fatal("element not found: %v", err)
 	}
-	el.MustFocus()
+	if err := el.Focus(); err != nil {
+		fatal("focus failed: %v", err)
+	}
 	fmt.Println("Focused")
 }
 
@@ -1209,25 +1253,31 @@ func cmdWait(args []string) {
 	if err != nil {
 		fatal("element not found: %v", err)
 	}
-	el.MustWaitVisible()
+	if err := el.WaitVisible(); err != nil {
+		fatal("wait failed: %v", err)
+	}
 	fmt.Println("Element visible")
 }
 
 func cmdWaitLoad(args []string) {
 	_, _, page := withPage()
-	page.MustWaitLoad()
+	waitLoaded(page)
 	fmt.Println("Page loaded")
 }
 
 func cmdWaitStable(args []string) {
 	_, _, page := withPage()
-	page.MustWaitStable()
+	if err := page.WaitStable(time.Second); err != nil {
+		fatal("wait failed: %v", err)
+	}
 	fmt.Println("DOM stable")
 }
 
 func cmdWaitIdle(args []string) {
 	_, _, page := withPage()
-	page.MustWaitIdle()
+	if err := page.WaitIdle(time.Minute); err != nil {
+		fatal("wait failed: %v", err)
+	}
 	fmt.Println("Network idle")
 }
 
@@ -1467,7 +1517,9 @@ func cmdClosePage(args []string) {
 		fatal("page index %d out of range", idx)
 	}
 
-	pages[idx].MustClose()
+	if err := pages[idx].Close(); err != nil {
+		fatal("failed to close page: %v", err)
+	}
 
 	// Adjust active page
 	if s.ActivePage >= len(pages)-1 {
