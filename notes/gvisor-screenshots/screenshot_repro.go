@@ -1,10 +1,11 @@
+//go:build ignore
 // +build ignore
 
 // Standalone test script to reproduce the gVisor screenshot issue.
 // Tests 6 different Chrome configurations and reports which ones
 // produce working screenshots.
 //
-// Usage: go run screenshot_test.go
+// Usage: go run screenshot_repro.go
 package main
 
 import (
