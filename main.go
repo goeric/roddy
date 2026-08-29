@@ -166,6 +166,32 @@ func fatal(format string, args ...interface{}) {
 	os.Exit(2)
 }
 
+// signalPID sends SIGTERM to a process roddy started, best effort. A zero or
+// negative pid means nothing was started.
+func signalPID(pid int) {
+	if pid <= 0 {
+		return
+	}
+	if proc, err := os.FindProcess(pid); err == nil {
+		proc.Signal(syscall.SIGTERM)
+	}
+}
+
+// adjustActivePage keeps the active-page index pointing at the same page after
+// the page at closed is removed from a list of count pages: indexes above the
+// closed page shift down by one, and an index at or past the new end clamps.
+func adjustActivePage(active, closed, count int) int {
+	if closed < active {
+		active--
+	} else if active >= count-1 {
+		active = count - 2
+	}
+	if active < 0 {
+		active = 0
+	}
+	return active
+}
+
 // waitLoaded reports a load that never finishes as an error instead of a
 // panic; the Must* forms dump a Go stack trace at the user.
 func waitLoaded(page *rod.Page) {
@@ -518,6 +544,9 @@ func cmdStart(args []string) {
 
 	debugURL, err := l.Launch()
 	if err != nil {
+		// The proxy helper was spawned before the launch; without a state file
+		// recording its PID, nothing could ever stop it.
+		signalPID(proxyPID)
 		fatal("failed to launch Chrome: %v", err)
 	}
 
@@ -535,6 +564,10 @@ func cmdStart(args []string) {
 	}
 
 	if err := saveState(state); err != nil {
+		// Without the state file the browser and proxy are unreachable by any
+		// future command, so leaving them running would just orphan them.
+		signalPID(proxyPID)
+		signalPID(pid)
 		fatal("failed to save state: %v", err)
 	}
 
@@ -633,29 +666,18 @@ func cmdStop(args []string) {
 	browser, err := connectBrowser(s)
 	if err != nil {
 		// Try to kill by PID only if we launched the browser
-		if s.ChromePID > 0 {
-			proc, err := os.FindProcess(s.ChromePID)
-			if err == nil {
-				proc.Signal(syscall.SIGTERM)
-			}
-		}
+		signalPID(s.ChromePID)
 	} else if s.ChromePID > 0 {
 		// Only close (and kill) the browser if we launched it. If the polite
 		// close fails, fall back to the signal — otherwise Chrome survives
 		// while the state that knows its PID is about to be removed.
 		if err := browser.Close(); err != nil {
-			if proc, err := os.FindProcess(s.ChromePID); err == nil {
-				proc.Signal(syscall.SIGTERM)
-			}
+			signalPID(s.ChromePID)
 		}
 	}
 	// If ChromePID==0 we connected to an external browser; just clear state without closing it
 	// Also kill the proxy helper if running
-	if s.ProxyPID > 0 {
-		if proc, err := os.FindProcess(s.ProxyPID); err == nil {
-			proc.Signal(syscall.SIGTERM)
-		}
-	}
+	signalPID(s.ProxyPID)
 	removeState()
 	fmt.Println("Chrome stopped")
 }
@@ -729,7 +751,9 @@ func cmdOpen(args []string) {
 			fatal("navigation failed: %v", err)
 		}
 		s.ActivePage = 0
-		saveState(s)
+		if err := saveState(s); err != nil {
+			fatal("failed to save state: %v", err)
+		}
 	} else {
 		page, err = getActivePage(browser, s)
 		if err != nil {
@@ -1485,7 +1509,9 @@ func cmdNewPage(args []string) {
 			break
 		}
 	}
-	saveState(s)
+	if err := saveState(s); err != nil {
+		fatal("failed to save state: %v", err)
+	}
 
 	info, _ := page.Info()
 	if info != nil {
@@ -1525,14 +1551,10 @@ func cmdClosePage(args []string) {
 		fatal("failed to close page: %v", err)
 	}
 
-	// Adjust active page
-	if s.ActivePage >= len(pages)-1 {
-		s.ActivePage = len(pages) - 2
+	s.ActivePage = adjustActivePage(s.ActivePage, idx, len(pages))
+	if err := saveState(s); err != nil {
+		fatal("failed to save state: %v", err)
 	}
-	if s.ActivePage < 0 {
-		s.ActivePage = 0
-	}
-	saveState(s)
 	fmt.Printf("Closed page %d\n", idx)
 }
 
