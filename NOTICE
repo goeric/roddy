@@ -40,6 +40,7 @@ The following files are new in Roddy and are not part of Rodney:
   capture_test.go
   sw.go, sw_test.go
   logs.go, logs_test.go
+  CLAUDE.md, docs/extension-testing-roadmap.md
   notes/gvisor-screenshots/
   skills/roddy/SKILL.md
   .claude-plugin/plugin.json, .claude-plugin/marketplace.json
