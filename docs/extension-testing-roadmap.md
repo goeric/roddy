@@ -40,7 +40,21 @@ accepts multiple KEY=VALUE pairs; whether bare-word values are strings or an
 error; whether `get` of a missing key prints `undefined` (exit 0) or exits 1
 check-style. Keep the surface as small as the answers allow.
 
-## 2. WXT ergonomics (small)
+## 2. WXT ergonomics (small) — SHIPPED
+
+Landed 2026-08 as Option B, the maintainer's pick: plain `roddy start`
+auto-detects a WXT project (`wxt.config.*` in the cwd plus a built
+`.output/chrome-mv3` with a manifest) and loads it with a printed notice;
+`--no-extension` opts out, an explicit `--extension` suppresses detection, and
+the two flags together are an error. Config without a build prints a
+"run wxt build" hint on stderr and starts without an extension. When
+auto-scoping would use the global session, a one-line tip suggests `--local`
+(never second-guessing an explicit --local/--global or RODDY_HOME). Detection
+commits to nothing it has not resolved: a build output that is present but
+unloadable (mid-write, no manifest, unreadable) prints the real error as a hint
+and start continues without an extension, so the auto path can never make a
+plain `roddy start` fail. The stale-build warning was ruled out of scope. The
+original design notes follow.
 
 WXT builds an unpacked MV3 extension at `.output/chrome-mv3`. Today users type
 `roddy start --extension .output/chrome-mv3` (documented in the README). The

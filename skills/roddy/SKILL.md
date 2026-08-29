@@ -86,6 +86,7 @@ running browser, so `roddy stop` and start again if you forget.
 roddy start --extension ./my-extension            # unpacked directory
 roddy start --extension ./packed.crx              # or a .crx / .zip (unpacked automatically)
 roddy start --extension ./one --extension ./two   # repeat for several
+roddy start                                       # in a WXT project: auto-loads .output/chrome-mv3
 roddy extensions                                  # list what's loaded, with IDs
 roddy sw eval '<js>'                              # run JS inside the background service worker
 roddy storage get/set/rm/clear                    # chrome.storage without writing JS
@@ -141,8 +142,12 @@ Neither wakes a worker Chrome suspended for idleness — send it a message to do
 that, as shown below.
 
 This is the backbone of extension e2e testing: seed state through the worker,
-drive the page, assert on both sides. For a WXT project the build output is the
-extension — `roddy start --extension .output/chrome-mv3`.
+drive the page, assert on both sides. For a WXT project plain `roddy start` in
+the project root is enough: when `wxt.config.*` and a built `.output/chrome-mv3`
+are present it loads the extension and prints a notice (`--no-extension` opts
+out, an explicit `--extension` always wins). If it reports the build output
+missing, run `wxt build` first; if a build is there but cannot be loaded, start
+prints why on stderr and continues without the extension.
 
 ### Extension storage without writing JS
 

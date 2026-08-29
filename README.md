@@ -147,13 +147,37 @@ Notes:
 
 - Extensions run in Chrome's [new headless
   mode](https://developer.chrome.com/docs/chromium/new-headless), which roddy
-  switches to automatically when `--extension` is used — the old headless mode
+  switches to automatically when extensions are loaded — the old headless mode
   cannot run extensions at all.
 - Chrome only loads *unpacked* extensions from the command line, so a `.crx` is
   unpacked before being loaded. It therefore gets an ID derived from its path on
   disk rather than the ID it would have when installed from the Web Store.
-- Only the extensions passed to `--extension` are enabled, and they stay loaded
-  for the lifetime of the session.
+- Only the extensions loaded at `start` — via `--extension`, or the WXT
+  auto-detection below — are enabled, and they stay loaded for the lifetime of
+  the session.
+
+#### WXT projects load themselves
+
+In a [WXT](https://wxt.dev) project — a `wxt.config.*` in the current
+directory — plain `roddy start` auto-loads the built extension from
+`.output/chrome-mv3`, printing a notice:
+
+```bash
+roddy start
+# WXT project detected: loading .output/chrome-mv3 (pass --no-extension to skip)
+# tip: use --local to keep this project's browser state isolated (./.roddy/)
+# Chrome started (PID 12345)
+# Debug URL: http://127.0.0.1:53421/devtools/browser/2f1c...
+# Extension loaded: My Extension (ldmakemplfmadpiihagnajidjbhnjlcm)
+```
+
+Pass `--no-extension` to start without it, or `--extension PATH` to load
+something else — an explicit choice always wins over detection. If the config
+is there but `.output/chrome-mv3` is not, start says so and continues without
+an extension: run `wxt build` and start again. A build that is there but cannot
+be loaded — mid-write, no manifest, unreadable — prints why on stderr and start
+continues without it, so detection never turns a working `roddy start` into an
+error.
 
 ### Extension service workers
 
@@ -192,8 +216,8 @@ This makes end-to-end extension tests plain shell — seed storage through the
 worker, drive the page, assert on both sides:
 
 ```bash
-# Testing a WXT project: build output is an unpacked MV3 extension
-roddy start --extension .output/chrome-mv3
+# Testing a WXT project: plain start auto-loads .output/chrome-mv3
+roddy start
 
 roddy storage set user test
 roddy open https://example.com

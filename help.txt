@@ -1,10 +1,13 @@
 roddy - Chrome automation from the command line
 
 Browser lifecycle:
-  roddy start [--show] [--insecure | -k] [--extension PATH]
+  roddy start [--show] [--insecure | -k] [--extension PATH] [--no-extension]
                                   Launch Chrome (headless by default, --show for visible)
                                   --extension loads an unpacked directory or a
-                                  .crx/.zip archive; repeat for several
+                                  .crx/.zip archive; repeat for several. In a
+                                  WXT project (wxt.config.* present), start
+                                  auto-loads a built .output/chrome-mv3 and
+                                  says so; --no-extension skips that
   roddy connect <host:port>      Connect to existing Chrome on remote debug port
   roddy stop                     Shut down Chrome
   roddy status                   Show browser status
