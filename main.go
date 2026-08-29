@@ -1409,18 +1409,18 @@ func cmdNewPage(args []string) {
 
 	url := ""
 	if len(args) > 0 {
-		url = args[0]
-		if !strings.Contains(url, "://") {
-			url = "http://" + url
-		}
+		url = normalizeOpenURL(args[0])
 	}
 
-	var page *rod.Page
+	// An empty URL opens a blank page.
+	page, err := browser.Page(proto.TargetCreateTarget{URL: url})
+	if err != nil {
+		fatal("failed to open page: %v", err)
+	}
 	if url != "" {
-		page = browser.MustPage(url)
-		page.MustWaitLoad()
-	} else {
-		page = browser.MustPage("")
+		if err := page.WaitLoad(); err != nil {
+			fatal("page did not finish loading: %v", err)
+		}
 	}
 
 	// Switch active to the new page
