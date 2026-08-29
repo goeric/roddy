@@ -39,8 +39,12 @@ const (
 	scopeGlobal                  // force global (~/.roddy/)
 )
 
-// activeStateDir is set once at startup based on --local/--global flags.
-var activeStateDir string
+// activeStateDir and activeScopeMode are set once at startup based on the
+// --local/--global flags.
+var (
+	activeStateDir  string
+	activeScopeMode scopeMode
+)
 
 // extractScopeArgs scans args for --local/--global, removes them, and returns the mode.
 // If both appear, the last one wins.
@@ -261,6 +265,7 @@ func main() {
 
 	wd, _ := os.Getwd()
 	activeStateDir = resolveStateDir(mode, wd)
+	activeScopeMode = mode
 
 	cmd := cleanedArgs[0]
 	args := cleanedArgs[1:]
@@ -431,13 +436,14 @@ func bringToFront(page *rod.Page) {
 
 // --- Commands ---
 
-const startUsage = "usage: roddy start [--show] [--insecure] [--extension PATH]"
+const startUsage = "usage: roddy start [--show] [--insecure] [--extension PATH] [--no-extension]"
 
 // startOptions holds the parsed flags for the "start" command.
 type startOptions struct {
 	ignoreCertErrors bool
 	headless         bool
 	extensions       []string
+	noExtension      bool // opt out of WXT auto-detection
 }
 
 // parseStartArgs parses the flags for the "start" command.
@@ -450,6 +456,7 @@ func parseStartArgs(args []string) (startOptions, error) {
 	fs.BoolVar(&opts.ignoreCertErrors, "insecure", false, "")
 	fs.BoolVar(&opts.ignoreCertErrors, "k", false, "")
 	fs.Var(&extensions, "extension", "")
+	fs.BoolVar(&opts.noExtension, "no-extension", false, "")
 	show := fs.Bool("show", false, "")
 
 	if parseErr := fs.Parse(args); parseErr != nil {
@@ -457,6 +464,9 @@ func parseStartArgs(args []string) (startOptions, error) {
 	}
 	if fs.NArg() > 0 {
 		return startOptions{headless: true}, fmt.Errorf("unknown flag: %s\n%s", fs.Arg(0), startUsage)
+	}
+	if opts.noExtension && len(extensions) > 0 {
+		return startOptions{headless: true}, fmt.Errorf("--no-extension conflicts with --extension\n%s", startUsage)
 	}
 	opts.headless = !*show
 	opts.extensions = extensions
@@ -468,6 +478,20 @@ func cmdStart(args []string) {
 	if err != nil {
 		fatal("%s", err)
 	}
+
+	// A WXT project's build output is the extension: load it unasked, saying
+	// so, unless the user already decided with --extension or --no-extension.
+	if path, notice, hint := wxtAuto(opts, detectWXT(".")); hint != "" {
+		fmt.Fprintln(os.Stderr, hint)
+	} else if path != "" {
+		opts.extensions = append(opts.extensions, path)
+		fmt.Println(notice)
+		if wd, err := os.Getwd(); err == nil &&
+			wxtTipWanted(activeScopeMode, os.Getenv("RODDY_HOME"), stateDir(), filepath.Join(wd, ".roddy")) {
+			fmt.Println(wxtLocalTip)
+		}
+	}
+
 	ignoreCertErrors, headless := opts.ignoreCertErrors, opts.headless
 
 	// Check if already running

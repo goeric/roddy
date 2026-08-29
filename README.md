@@ -155,6 +155,25 @@ Notes:
 - Only the extensions passed to `--extension` are enabled, and they stay loaded
   for the lifetime of the session.
 
+#### WXT projects load themselves
+
+In a [WXT](https://wxt.dev) project — a `wxt.config.*` in the current
+directory — plain `roddy start` auto-loads the built extension from
+`.output/chrome-mv3`, printing a notice:
+
+```bash
+roddy start
+# WXT project detected: loading .output/chrome-mv3 (pass --no-extension to skip)
+# tip: use --local to keep this project's browser state isolated (./.roddy/)
+# Chrome started (PID 12345)
+# Extension loaded: My Extension (ldmakemplfmadpiihagnajidjbhnjlcm)
+```
+
+Pass `--no-extension` to start without it, or `--extension PATH` to load
+something else — an explicit choice always wins over detection. If the config
+is there but `.output/chrome-mv3` is not (or has no manifest), start says so
+and continues without an extension: run `wxt build` and start again.
+
 ### Extension service workers
 
 An MV3 extension's logic lives in its background service worker, which has no
@@ -192,8 +211,8 @@ This makes end-to-end extension tests plain shell — seed storage through the
 worker, drive the page, assert on both sides:
 
 ```bash
-# Testing a WXT project: build output is an unpacked MV3 extension
-roddy start --extension .output/chrome-mv3
+# Testing a WXT project: plain start auto-loads .output/chrome-mv3
+roddy start
 
 roddy storage set user test
 roddy open https://example.com
