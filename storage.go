@@ -26,8 +26,8 @@ type storageOp struct {
 // parseStorageFlags pulls --area, --ext and --timeout out of args wherever they
 // appear, the way parseSWFlags does. Unlike sw eval there is no expression to
 // keep intact, so an unrecognized flag is an error rather than data — except a
-// negative number ("-1.5"), which is a value. "--" ends the flags for keys that
-// really do start with a dash.
+// negative number ("-1.5"), which is a value. "--" ends the flags for keys or
+// values that really do start with a dash.
 func parseStorageFlags(args []string) (area, ext string, timeout time.Duration, rest []string, err error) {
 	area = "local"
 	timeout = 5 * time.Second
@@ -40,7 +40,7 @@ func parseStorageFlags(args []string) (area, ext string, timeout time.Duration, 
 		case "--area", "-area", "--ext", "-ext", "--timeout", "-timeout":
 		default:
 			if storageFlagLike(name) {
-				return "", "", 0, nil, fmt.Errorf("unknown flag: %s", name)
+				return "", "", 0, nil, fmt.Errorf(`unknown flag: %s (use "--" before keys or values that start with a dash)`, name)
 			}
 			rest = append(rest, args[i])
 			continue
@@ -60,6 +60,11 @@ func parseStorageFlags(args []string) (area, ext string, timeout time.Duration, 
 			if value == "" {
 				return "", "", 0, nil, fmt.Errorf("flag %s needs a non-empty value", name)
 			}
+			// Extension IDs are letters a-p, so a flag-like value is the next flag
+			// swallowed by a missing ID rather than an ID.
+			if storageFlagLike(value) {
+				return "", "", 0, nil, fmt.Errorf("invalid value %q for flag %s (extension IDs are letters a-p)", value, name)
+			}
 			ext = value
 		default: // --timeout, -timeout
 			if timeout, err = time.ParseDuration(value); err != nil {
@@ -71,12 +76,16 @@ func parseStorageFlags(args []string) (area, ext string, timeout time.Duration, 
 }
 
 // storageFlagLike reports whether a bare argument is a mistyped flag rather
-// than data: it starts with a dash and is not a negative number.
+// than data: a dash whose next character is neither a digit nor a dot, so
+// "-1.5" and "-.5" are data and "-1x" passes as data too.
 func storageFlagLike(s string) bool {
 	return len(s) >= 2 && s[0] == '-' && s[1] != '.' && (s[1] < '0' || s[1] > '9')
 }
 
-// storageArgs validates the positional arguments once the flags are gone.
+// storageArgs validates the positional arguments once the flags are gone. An
+// explicitly empty KEY is rejected everywhere it can appear: it is what an
+// unset shell variable expands to, and for get it would otherwise dump the
+// whole area and exit 0, making "get X || set X" always pass.
 func storageArgs(rest []string) (storageOp, error) {
 	if len(rest) == 0 {
 		return storageOp{}, fmt.Errorf("missing storage subcommand")
@@ -89,16 +98,27 @@ func storageArgs(rest []string) (storageOp, error) {
 			return storageOp{}, fmt.Errorf("get takes at most one KEY")
 		}
 		if len(args) == 1 {
+			if args[0] == "" {
+				return storageOp{}, fmt.Errorf("get needs a non-empty KEY (omit it for the whole area)")
+			}
 			op.key = args[0]
 		}
 	case "set":
 		if len(args) != 2 {
 			return storageOp{}, fmt.Errorf("set takes exactly KEY VALUE")
 		}
+		if args[0] == "" {
+			return storageOp{}, fmt.Errorf("set needs a non-empty KEY")
+		}
 		op.key, op.value = args[0], args[1]
 	case "rm":
 		if len(args) == 0 {
 			return storageOp{}, fmt.Errorf("rm needs at least one KEY")
+		}
+		for _, k := range args {
+			if k == "" {
+				return storageOp{}, fmt.Errorf("rm needs a non-empty KEY")
+			}
 		}
 		op.keys = args
 	case "clear":
@@ -141,8 +161,14 @@ func storageGetJS(area, key string) string {
 	return fmt.Sprintf("chrome.storage.%s.get([%s]).then(r => [Object.hasOwn(r, %s), r[%s]])", area, k, k, k)
 }
 
+// storageSetJS hands Chrome a JSON.parse of the payload rather than an object
+// literal: a non-computed "__proto__" key in a literal sets the prototype and
+// creates no own property (ES B.3.1), so a literal would silently drop such a
+// key — and any nested one inside VALUE — while still reporting success.
+// storageValueJS always returns JSON text, so the payload is valid JSON.
 func storageSetJS(area, key, valueJS string) string {
-	return fmt.Sprintf("chrome.storage.%s.set({%s: %s})", area, jsStringLit(key), valueJS)
+	payload := "{" + jsStringLit(key) + ":" + valueJS + "}"
+	return fmt.Sprintf("chrome.storage.%s.set(JSON.parse(%s))", area, jsStringLit(payload))
 }
 
 func storageRemoveJS(area string, keys []string) string {
@@ -155,14 +181,24 @@ func storageClearJS(area string) string {
 }
 
 // storageGetResult unpacks what storageGetJS resolved to. Anything but the
-// constructed pair cannot happen short of the eval machinery failing, which
-// already errored; the guard only keeps a surprise from becoming a panic.
-func storageGetResult(v gson.JSON) (present bool, value gson.JSON) {
+// constructed pair means an invariant of our own generated JS broke, which
+// reports as an error rather than "not present": the documented
+// "get X || set X" idiom would turn a wrong absence into an overwrite.
+func storageGetResult(v gson.JSON) (present bool, value gson.JSON, err error) {
 	pair := v.Arr()
 	if len(pair) != 2 {
-		return false, gson.New(nil)
+		return false, gson.New(nil), fmt.Errorf("unexpected storage get result: %s", v.JSON("", ""))
 	}
-	return pair[0].Bool(), pair[1]
+	return pair[0].Bool(), pair[1], nil
+}
+
+// storageGuardJS names the missing permission instead of letting the read of
+// chrome.storage.<area> fail as "TypeError: Cannot read properties of
+// undefined (reading 'local')". The rejection keeps the whole thing an
+// expression, which is what evalInServiceWorker's IIFE returns and awaits.
+func storageGuardJS(expr string) string {
+	const reason = `chrome.storage is unavailable: the extension must declare the "storage" permission in its manifest`
+	return fmt.Sprintf("(globalThis.chrome?.storage ? (%s) : Promise.reject(Error(%s)))", expr, jsStringLit(reason))
 }
 
 // cmdStorage handles "roddy storage get/set/rm/clear": thin sugar over the
@@ -193,7 +229,7 @@ func cmdStorage(args []string) {
 		fatal("%v", err)
 	}
 	eval := func(js string) gson.JSON {
-		v, err := evalInServiceWorker(browser, sw, js)
+		v, err := evalInServiceWorker(browser, sw, storageGuardJS(js))
 		if err != nil {
 			fatal("%v", err)
 		}
@@ -206,7 +242,10 @@ func cmdStorage(args []string) {
 			fmt.Println(formatJSValue(eval(storageGetAllJS(area))))
 			return
 		}
-		present, value := storageGetResult(eval(storageGetJS(area, op.key)))
+		present, value, err := storageGetResult(eval(storageGetJS(area, op.key)))
+		if err != nil {
+			fatal("%v", err)
+		}
 		if !present {
 			fmt.Println("undefined")
 			os.Exit(1)

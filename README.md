@@ -235,9 +235,11 @@ roddy storage get onboarded || roddy storage set onboarded true
 ```
 
 The commands run inside the extension's service worker through the same
-plumbing as `sw eval`: the extension needs the `storage` permission, `--ext ID`
-picks one extension when several are loaded, and `--timeout` (default 5s)
-bounds the wait for the worker.
+plumbing as `sw eval`: the extension's manifest must declare the `storage`
+permission, `--ext ID` picks one extension when several are loaded, and
+`--timeout` (default 5s) bounds the wait for the worker. Flags may appear
+anywhere; put `--` in front of a KEY or VALUE that itself starts with a dash,
+which a negative number (`-1.5`) does not need.
 
 ### Console output
 

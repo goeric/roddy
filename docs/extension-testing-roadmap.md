@@ -7,7 +7,7 @@ WXT projects especially. The foundation shipped in 2026-08 (PRs #1–#4):
 pre-launch extension IDs, and a CLI that reports every failure as
 `error: ...` exit 2 rather than a Go panic.
 
-Three items remain, ordered by effort. Read CLAUDE.md first — it records the
+The remaining items, ordered by effort. Read CLAUDE.md first — it records the
 rod/Chrome facts these designs depend on, verified so they need not be
 re-derived.
 

@@ -27,10 +27,12 @@ Browser lifecycle:
   roddy storage rm KEY...        Remove keys (absent keys are ignored)
   roddy storage clear            Wipe the area
                                   All storage commands run inside the
-                                  extension's service worker (which needs the
-                                  "storage" permission) and take --area
-                                  local|sync|session|managed (default local),
-                                  plus --ext and --timeout as for sw eval
+                                  extension's service worker, so its manifest
+                                  must declare the "storage" permission. They
+                                  take --area local|sync|session|managed
+                                  (default local), plus --ext and --timeout as
+                                  for sw eval; put -- before a KEY or VALUE
+                                  that starts with a dash
 
 Navigation:
   roddy open <url>               Navigate to URL
@@ -113,6 +115,6 @@ Environment:
 
 Exit codes:
   0  Success
-  1  Check failed (exists, visible, assert, ax-find, storage get or sw found
-     nothing)
+  1  Check failed: exists, visible, assert and ax-find found no match,
+     "storage get KEY" found no such key, or sw found no service worker
   2  Error (bad arguments, no browser, timeout, etc.)

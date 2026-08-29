@@ -164,9 +164,10 @@ roddy storage get tok --area session     # areas: local (default), sync, session
 a stored `null` or `false` still exits 0 and `roddy storage get onboarded ||
 roddy storage set onboarded true` seeds only when unseeded. To force a string
 that would parse as JSON, quote it twice: `roddy storage set flag '"true"'`.
-The commands run inside the service worker, so the extension needs the
-`storage` permission and the `--ext`/`--timeout` rules of `sw eval` apply
-unchanged. `managed` is read-only by design — writes report Chrome's error.
+The commands run inside the service worker, so the extension's manifest must
+declare the `storage` permission and the `--ext`/`--timeout` rules of `sw eval`
+apply unchanged. Put `--` before a KEY or VALUE that starts with a dash.
+`managed` is read-only by design — writes report Chrome's error.
 
 Alternatively, a worker also responds to messages sent from any extension page —
 and the message itself is an event, so this starts a suspended worker:
