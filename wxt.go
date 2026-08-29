@@ -32,14 +32,14 @@ const (
 // which start turns into a "run wxt build" hint. Anything else is a candidate
 // whose contents wxtStart resolves — a present-but-broken build degrades there.
 func detectWXT(dir string) wxtDetection {
-	config := false
+	hasConfig := false
 	for _, name := range wxtConfigNames {
 		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
-			config = true
+			hasConfig = true
 			break
 		}
 	}
-	if !config {
+	if !hasConfig {
 		return wxtNone
 	}
 	if _, err := os.Stat(filepath.Join(dir, wxtChromeOutput)); errors.Is(err, fs.ErrNotExist) {

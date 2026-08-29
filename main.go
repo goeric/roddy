@@ -479,11 +479,9 @@ func cmdStart(args []string) {
 		fatal("%s", err)
 	}
 
-	// A WXT project's build output is the extension: load it unasked, saying
-	// so, unless the user already decided with --extension or --no-extension.
-	// wxtStart resolves the build before amending opts, so the notice only
-	// promises what loaded and a broken build never fatals a plain start.
-	// The unpack root is loadExtensions', which resolves the same paths later.
+	// A WXT project's build output is the extension: load it unasked unless the
+	// user already decided with --extension or --no-extension. The unpack root
+	// is loadExtensions', which resolves the same paths later.
 	opts, wxtNotice, wxtHint := wxtStart(opts, ".", filepath.Join(stateDir(), "extensions"))
 	if wxtHint != "" {
 		fmt.Fprintln(os.Stderr, wxtHint)
