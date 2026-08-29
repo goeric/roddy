@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-rod/rod/lib/cdp"
 	"github.com/go-rod/rod/lib/proto"
 	"github.com/ysmood/gson"
 )
@@ -142,6 +143,8 @@ func TestParseLogsFlags(t *testing.T) {
 		{"--bogus"},        // an unknown flag
 		{"--timeout"},      // a value flag with nothing after it
 		{"--timeout=nope"}, // an unparseable duration
+		{"--timeout=0s"},   // a timeout that can never collect anything
+		{"--timeout=-5s"},  // a negative timeout
 		{"--sw", "--ext="}, // an empty --ext is an unset shell variable
 		// Bool flags take no value: "--follow=false" must not read as true.
 		{"--follow=false"},
@@ -206,6 +209,40 @@ func TestSnapshotLinesDeadline(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
 		t.Errorf("gather ran for %v; the deadline should have ended it", elapsed)
+	}
+}
+
+func TestIsMethodNotFound(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"unknown method by code", &cdp.Error{Code: -32601, Message: "'Log.enable' wasn't found"}, true},
+		{"unknown method by text", &cdp.Error{Code: -32000, Message: "'Log.enable' wasn't found"}, true},
+		{"session gone", &cdp.Error{Code: -32001, Message: "Session with given id not found"}, false},
+		{"not a cdp error", context.DeadlineExceeded, false},
+	}
+	for _, c := range cases {
+		if got := isMethodNotFound(c.err); got != c.want {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// TestSnapshotLinesDeadlineDrainsBuffer: lines already delivered must not be
+// shed just because the deadline fired mid-read.
+func TestSnapshotLinesDeadlineDrainsBuffer(t *testing.T) {
+	ch := make(chan logLine, 8)
+	for i := 0; i < 8; i++ {
+		ch <- logLine{proto.RuntimeTimestamp(i), "buffered"}
+	}
+	lines, end := snapshotLines(ch, time.Minute, time.Nanosecond)
+	if end != snapshotDeadline {
+		t.Errorf("got end %v, want snapshotDeadline", end)
+	}
+	if len(lines) != 8 {
+		t.Errorf("got %d lines, want all 8 buffered before the deadline", len(lines))
 	}
 }
 

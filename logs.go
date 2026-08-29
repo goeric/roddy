@@ -73,6 +73,9 @@ func parseLogsFlags(args []string) (logsFlags, error) {
 			if f.timeout, err = time.ParseDuration(value); err != nil {
 				return logsFlags{}, fmt.Errorf("invalid value %q for flag %s: %w", value, name, err)
 			}
+			if f.timeout <= 0 {
+				return logsFlags{}, fmt.Errorf("flag %s needs a positive duration", name)
+			}
 		}
 	}
 	if f.ext != "" && !f.sw {
@@ -132,6 +135,8 @@ func openLogStream(ctx context.Context, browser *rod.Browser, targetID proto.Tar
 	// EachEvent subscribes when called, not when its wait func runs — the call
 	// must complete before the enables below, or the replay races the
 	// subscription and can be lost. Only the blocking wait goes in a goroutine.
+	// (EachEvent also fires error-swallowed Runtime/Log enables of its own, but
+	// at the browser-level session, so our flat session's replay is untouched.)
 	wait := browser.Context(ctx).EachEvent(
 		func(e *proto.RuntimeConsoleAPICalled, sid proto.TargetSessionID) {
 			if sid == att.SessionID {
@@ -182,9 +187,12 @@ func openLogStream(ctx context.Context, browser *rod.Browser, targetID proto.Tar
 	// ROD_CHROME_BIN that does not answers "method not found", and losing those
 	// entries beats refusing to stream. Any other failure is real: the stream
 	// would silently drop output it promises.
-	if err := (proto.LogEnable{}).Call(sess); err != nil && !isMethodNotFound(err) {
-		cancel()
-		return nil, logSetupErr("failed to enable browser log events", err)
+	if err := (proto.LogEnable{}).Call(sess); err != nil {
+		if !isMethodNotFound(err) {
+			cancel()
+			return nil, logSetupErr("failed to enable browser log events", err)
+		}
+		fmt.Fprintln(os.Stderr, "(browser log entries unavailable on this browser; console output only)")
 	}
 	return s, nil
 }
@@ -239,7 +247,20 @@ gather:
 			break gather
 		case <-expire:
 			end = snapshotDeadline
-			break gather
+			// Take what is already buffered — shedding half a replay burst at
+			// the deadline would misreport how much the page had logged.
+			for {
+				select {
+				case l, ok := <-ch:
+					if !ok {
+						break gather
+					}
+					lines = append(lines, l)
+					continue
+				default:
+				}
+				break gather
+			}
 		}
 	}
 	// Runtime and Log replay as separate bursts rather than interleaved, so the
@@ -380,7 +401,7 @@ func cmdLogs(args []string) {
 	}
 	switch end {
 	case snapshotDeadline:
-		fmt.Fprintf(os.Stderr, "(output still streaming after %s; use --follow)\n", f.timeout)
+		fmt.Fprintf(os.Stderr, "(collection stopped after %s with output still arriving; use --follow for the rest)\n", f.timeout)
 	case snapshotClosed:
 		fatal("%s", stream.endReason())
 	}
