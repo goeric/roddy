@@ -19,6 +19,18 @@ Browser lifecycle:
                                   for one worker per extension that declares
                                   one. The evaluation itself is bounded by
                                   ROD_TIMEOUT
+  roddy storage get [KEY]        Read chrome.storage: the whole area when KEY
+                                  is omitted; a missing KEY prints undefined
+                                  and exits 1
+  roddy storage set KEY VALUE    Write one key: VALUE is JSON when it parses
+                                  (3, true, {"a":1}), a string otherwise
+  roddy storage rm KEY...        Remove keys (absent keys are ignored)
+  roddy storage clear            Wipe the area
+                                  All storage commands run inside the
+                                  extension's service worker (which needs the
+                                  "storage" permission) and take --area
+                                  local|sync|session|managed (default local),
+                                  plus --ext and --timeout as for sw eval
 
 Navigation:
   roddy open <url>               Navigate to URL
@@ -101,5 +113,6 @@ Environment:
 
 Exit codes:
   0  Success
-  1  Check failed (exists, visible, assert, ax-find or sw found nothing)
+  1  Check failed (exists, visible, assert, ax-find, storage get or sw found
+     nothing)
   2  Error (bad arguments, no browser, timeout, etc.)
