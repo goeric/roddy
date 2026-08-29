@@ -7,11 +7,18 @@ WXT projects especially. The foundation shipped in 2026-08 (PRs #1–#4):
 pre-launch extension IDs, and a CLI that reports every failure as
 `error: ...` exit 2 rather than a Go panic.
 
-Three items remain, ordered by effort. Read CLAUDE.md first — it records the
+The remaining items, ordered by effort. Read CLAUDE.md first — it records the
 rod/Chrome facts these designs depend on, verified so they need not be
 re-derived.
 
-## 1. `roddy storage` — get/set sugar (small)
+## 1. `roddy storage` — get/set sugar (small) — SHIPPED
+
+Landed 2026-08: `storage get [KEY]` (whole area when KEY omitted; a missing
+KEY prints `undefined`, exit 1 check-style, decided by key presence),
+`storage set KEY VALUE` (VALUE is JSON when it parses, a string otherwise),
+`storage rm KEY...`, `storage clear`, `--area local|sync|session|managed`
+(managed read-only, surfacing Chrome's own error on writes), `--ext`/
+`--timeout` as in `sw eval`. The original design notes follow.
 
 Reading and seeding `chrome.storage` is the single most common test-setup act,
 and today it requires composing JS through `sw eval`:

@@ -195,16 +195,51 @@ worker, drive the page, assert on both sides:
 # Testing a WXT project: build output is an unpacked MV3 extension
 roddy start --extension .output/chrome-mv3
 
-roddy sw eval 'chrome.storage.local.set({user: "test"}).then(() => "ok")'
+roddy storage set user test
 roddy open https://example.com
 roddy assert 'document.documentElement.dataset.myExtension' 'active'
-roddy sw eval 'chrome.storage.local.get("lastSeen").then(v => v.lastSeen)'
+roddy storage get lastSeen
 ```
 
 Because Chrome derives an unpacked extension's ID from its load path — roddy
 merely reproduces the computation to print the ID before launch — the ID is
 stable across runs, so `chrome-extension://` URLs can be hardcoded in test
 scripts instead of being discovered at runtime.
+
+### Extension storage
+
+Seeding and reading `chrome.storage` is the most common extension test-setup
+act, so it has first-class sugar — no JS required:
+
+```bash
+roddy storage get                   # the whole area as JSON
+roddy storage get user              # one key
+roddy storage set user test         # a bare word stays a string...
+roddy storage set count 3           # ...valid JSON keeps its type
+roddy storage set config '{"theme":"dark"}'
+roddy storage rm user count         # remove keys (absent ones are ignored)
+roddy storage clear                 # wipe the area
+```
+
+`--area local|sync|session|managed` picks the storage area (default `local`).
+`managed` is read-only by design, so writing to it reports Chrome's own error.
+VALUE is parsed as JSON when it parses — `3`, `true`, `{"a":1}` — and treated
+as a plain string otherwise; force a string that would otherwise parse by
+quoting it twice: `roddy storage set flag '"true"'`.
+
+`storage get KEY` of a key that is not there prints `undefined` and exits 1.
+Presence of the key decides, so a stored `null` or `false` still exits 0:
+
+```bash
+roddy storage get onboarded || roddy storage set onboarded true
+```
+
+The commands run inside the extension's service worker through the same
+plumbing as `sw eval`: the extension's manifest must declare the `storage`
+permission, `--ext ID` picks one extension when several are loaded, and
+`--timeout` (default 5s) bounds the wait for the worker. Flags may appear
+anywhere; put `--` in front of a KEY or VALUE that itself starts with a dash,
+which a negative number (`-1.5`) does not need.
 
 ### Console output
 
@@ -503,6 +538,16 @@ roddy assert 'document.querySelector(".logged-in")' -m "User should be logged in
 
 roddy assert 'document.title' 'Dashboard' --message "Wrong page loaded"
 # On failure: 'fail: Wrong page loaded (got "Home", expected "Dashboard")'
+```
+
+### `storage get` — check an extension storage key
+
+`roddy storage get KEY` prints the value when the key exists, and prints
+`undefined` and exits 1 when it does not. The key's presence decides, so a
+stored `null` or `false` still exits 0:
+
+```bash
+roddy storage get onboarded || roddy storage set onboarded true
 ```
 
 ### Combining checks in a shell script

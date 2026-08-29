@@ -363,6 +363,8 @@ func main() {
 		cmdAXNode(args)
 	case "sw":
 		cmdSW(args)
+	case "storage":
+		cmdStorage(args)
 	case "logs":
 		cmdLogs(args)
 	case "help", "-h", "--help":

@@ -88,6 +88,7 @@ roddy start --extension ./packed.crx              # or a .crx / .zip (unpacked a
 roddy start --extension ./one --extension ./two   # repeat for several
 roddy extensions                                  # list what's loaded, with IDs
 roddy sw eval '<js>'                              # run JS inside the background service worker
+roddy storage get/set/rm/clear                    # chrome.storage without writing JS
 roddy logs [--sw]                                 # console output, incl. messages from before
 ```
 
@@ -142,6 +143,31 @@ that, as shown below.
 This is the backbone of extension e2e testing: seed state through the worker,
 drive the page, assert on both sides. For a WXT project the build output is the
 extension — `roddy start --extension .output/chrome-mv3`.
+
+### Extension storage without writing JS
+
+`chrome.storage` reads and writes have first-class sugar — prefer it over
+composing `sw eval` expressions by hand:
+
+```bash
+roddy storage get                        # whole area as JSON
+roddy storage get user                   # one key; missing → "undefined", exit 1
+roddy storage set user test              # bare word stays a string
+roddy storage set count 3                # valid JSON keeps its type (3, true, {"a":1})
+roddy storage set config '{"theme":"dark"}'
+roddy storage rm user count              # absent keys are silently ignored
+roddy storage clear                      # wipe the area
+roddy storage get tok --area session     # areas: local (default), sync, session, managed
+```
+
+`storage get KEY` is a check like `exists`: presence decides the exit code, so
+a stored `null` or `false` still exits 0 and `roddy storage get onboarded ||
+roddy storage set onboarded true` seeds only when unseeded. To force a string
+that would parse as JSON, quote it twice: `roddy storage set flag '"true"'`.
+The commands run inside the service worker, so the extension's manifest must
+declare the `storage` permission and the `--ext`/`--timeout` rules of `sw eval`
+apply unchanged. Put `--` before a KEY or VALUE that starts with a dash.
+`managed` is read-only by design — writes report Chrome's error.
 
 Alternatively, a worker also responds to messages sent from any extension page —
 and the message itself is an event, so this starts a suspended worker:
@@ -249,6 +275,7 @@ roddy exists <selector>             # exit 1 if absent
 roddy visible <selector>            # exit 1 if not visible
 roddy count <selector>              # print how many match
 roddy assert <expr> [expected] [-m msg]   # assert a JS expression is truthy (or == expected)
+roddy storage get <key>             # exit 1 if the extension storage key is absent
 ```
 
 **Do not use `roddy status` as a liveness check.** It exits `0` even when the
