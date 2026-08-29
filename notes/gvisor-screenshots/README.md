@@ -148,10 +148,10 @@ the flag on Darwin. Linux and Windows keep it.
 
 ## Reproducing
 
-The test script `screenshot_test.go` in this directory reproduces the investigation.
+The test script `screenshot_repro.go` in this directory reproduces the investigation.
 Run it against a fresh Chrome instance to verify the fix:
 
 ```bash
 cd notes/gvisor-screenshots
-go run screenshot_test.go
+go run screenshot_repro.go
 ```
