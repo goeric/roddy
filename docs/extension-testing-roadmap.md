@@ -78,8 +78,13 @@ source-mining pass. Architecture A (foreground `roddy stub rules.json`, the
 conventions: their glob dialect (ported from urlMatch.ts), their verb and
 field names (fulfill/abort/continue; status/headers/contentType/body/json/
 path), their abort codes. First match wins top-down; unmatched requests
-continue. One browser-level `Fetch.enable` covers pages, content scripts and
-MV3 extension SWs (verified — no per-target machinery needed). Preflights for
+continue. One browser-level `Fetch.enable` covers pages and content scripts;
+a worker's fetches obey only the interception state present when the worker
+STARTED (eval-triggered fetches pass under the browser-level enable alone,
+which is what the first spike over-generalized from), so the stub uses
+Playwright's model — auto-attach with wait-for-debugger, enable Fetch on the
+worker's session, resume — and restarts workers that were already running.
+Workers stay awake while the stub runs. Preflights for
 stubbed endpoints get a synthesized 204, others pass through; cross-origin
 fulfills reflect CORS headers; redirect hops pass through unmatched. Deferred
 deliberately: `times`, `fallback` chaining, response mutation (route.fetch

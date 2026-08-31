@@ -215,8 +215,11 @@ Gotchas worth knowing:
 
 `roddy stub rules.json` intercepts every request the browser makes — pages,
 content scripts, and extension service workers — and answers matching ones
-from a JSON rules file. It holds the session in the foreground until Ctrl+C,
-printing one line per matched decision; run it in the background from scripts:
+from a JSON rules file. Starting it restarts running extension workers (their
+request path is fixed at start, so interception must be armed first; stored
+state survives, in-memory state resets), and workers stay awake while the
+stub runs. It holds the session in the foreground until Ctrl+C, printing one
+line per matched decision; run it in the background from scripts:
 
 ```bash
 roddy stub rules.json & STUB=$!
@@ -247,7 +250,9 @@ First match wins, top to bottom; unmatched requests continue to the real
 network. Preflights for stubbed endpoints are answered automatically, and
 cross-origin fulfills get CORS headers reflected — stub a cross-origin API
 and the page can read it without server cooperation. The whole file is
-validated before the browser is touched. One stub at a time.
+validated before the browser is touched. One stub at a time. Rare gotcha: an
+`sw eval 'fetch(...)'` fired while the extension's own stubbed traffic is
+mid-flight can time out (a Chromium race) — just retry the eval.
 
 ## Reading console output
 

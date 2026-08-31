@@ -469,14 +469,18 @@ func stubPreflightPayload(e *proto.FetchRequestPaused) *proto.FetchFulfillReques
 }
 
 // runStub holds browser-wide interception until ctx ends or the connection
-// drops, answering every pause: verified on this Chromium, one browser-level
-// Fetch.enable covers pages, content scripts and MV3 service workers, and
-// interception itself bypasses the HTTP cache.
+// drops, answering every pause. The browser-level Fetch.enable covers pages
+// and content scripts (and fetches issued through debugger evals, which ride
+// the eval's session); a worker's ORGANIC fetches — its own extension logic —
+// only pause once Fetch is enabled on the worker's own session, so every
+// extension service worker is attached and enabled individually, found
+// through target discovery so a worker that restarts is covered too.
+// Interception itself bypasses the HTTP cache (verified on this Chromium).
 //
-// The subscription is registered before the enable (the logs.go lesson), and
-// every answer runs in its own goroutine: rod runs the callbacks synchronously
-// inside wait, so answering inline would serialize every pause behind the
-// previous answer's round-trip.
+// The subscriptions are registered before the enables (the logs.go lesson),
+// and every answer runs in its own goroutine: rod runs the callbacks
+// synchronously inside wait, so answering inline would serialize every pause
+// behind the previous answer's round-trip.
 func runStub(ctx context.Context, browser *rod.Browser, rules []stubRule, out io.Writer, verbose bool) error {
 	var mu sync.Mutex
 	logf := func(format string, args ...interface{}) {
@@ -489,22 +493,60 @@ func runStub(ctx context.Context, browser *rod.Browser, rules []stubRule, out io
 	// `sessionID == "" || msg.SessionID == sessionID`, and Browser.EachEvent
 	// passes ""), so the sid parameter is not what makes them arrive: it says
 	// which session to answer on. Every pause observed on this Chromium carries
-	// sid "" — even with flat sessions attached to service workers, as every
-	// sw/storage command does — so the routing is defensive.
-	wait := browser.Context(ctx).EachEvent(func(e *proto.FetchRequestPaused, sid proto.TargetSessionID) {
-		// Answers go out on a deadlined client: a wedged browser must fail the
-		// answer rather than park its goroutine forever.
-		var client proto.Client = browser.Timeout(defaultTimeout)
-		if sid != "" {
-			client = browser.Timeout(defaultTimeout).PageFromSession(sid)
-		}
-		go answerPause(client, rules, e, logf, verbose)
-	})
+	// sid "" — even those raised by a worker session's own Fetch.enable — so
+	// the routing is defensive.
+	seen := &stubWorkers{ids: map[proto.TargetTargetID]bool{}}
+	wait := browser.Context(ctx).EachEvent(
+		func(e *proto.FetchRequestPaused, sid proto.TargetSessionID) {
+			// Answers go out on a deadlined client: a wedged browser must fail the
+			// answer rather than park its goroutine forever.
+			var client proto.Client = browser.Timeout(defaultTimeout)
+			if sid != "" {
+				client = browser.Timeout(defaultTimeout).PageFromSession(sid)
+			}
+			go answerPause(client, rules, e, logf, verbose)
+		},
+		func(e *proto.TargetAttachedToTarget) {
+			go admitTarget(browser, e, seen, logf, verbose)
+		},
+	)
 
 	if err := (proto.FetchEnable{
 		Patterns: []*proto.FetchRequestPattern{{URLPattern: "*", RequestStage: proto.FetchRequestStageRequest}},
 	}).Call(browser.Timeout(defaultTimeout)); err != nil {
 		return fmt.Errorf("failed to enable interception: %w", err)
+	}
+
+	// A worker's outgoing-request path bakes the interception state in when
+	// the worker STARTS, so enabling Fetch on a running worker changes
+	// nothing (Playwright's per-target model exists for this). Auto-attach
+	// holds every new target until admitTarget has enabled its session and
+	// released it, so a worker's first instruction runs intercepted…
+	if err := (proto.TargetSetAutoAttach{
+		AutoAttach: true, WaitForDebuggerOnStart: true, Flatten: true,
+	}).Call(browser.Timeout(defaultTimeout)); err != nil {
+		return fmt.Errorf("failed to auto-attach targets: %w", err)
+	}
+	// setAutoAttach returns before existing targets attach; a dummy call
+	// flushes it (Playwright's crBrowser workaround).
+	_, _ = proto.TargetGetTargetInfo{}.Call(browser.Timeout(defaultTimeout))
+
+	// …and the workers already running, whose requests would bypass the stub
+	// until they happen to restart, are closed now: an extension worker's
+	// registration survives its target, so the next event aimed at it
+	// restarts it under the auto-attach, intercepted from the start. (The
+	// ServiceWorker domain would stop them more gently, but Chrome rejects it
+	// on the browser session.)
+	list, err := proto.TargetGetTargets{}.Call(browser.Timeout(defaultTimeout))
+	if err != nil {
+		return fmt.Errorf("failed to list service workers: %w", err)
+	}
+	for _, t := range list.TargetInfos {
+		if stubWorkerTarget(t) {
+			if _, err := (proto.TargetCloseTarget{TargetID: t.TargetID}).Call(browser.Timeout(defaultTimeout)); err != nil {
+				logf("worker %s → cannot restart: %v (its requests stay live until it restarts)", t.URL, err)
+			}
+		}
 	}
 
 	wait()
@@ -517,6 +559,53 @@ func runStub(ctx context.Context, browser *rod.Browser, rules []stubRule, out io
 		return nil
 	}
 	return fmt.Errorf("browser connection lost")
+}
+
+// stubWorkerTarget reports whether a target is an extension service worker —
+// the only kind whose organic fetches need a per-session Fetch.enable.
+func stubWorkerTarget(t *proto.TargetTargetInfo) bool {
+	return t.Type == proto.TargetTargetInfoTypeServiceWorker &&
+		strings.HasPrefix(t.URL, "chrome-extension://")
+}
+
+// stubWorkers tracks which worker targets already have interception, since
+// discovery can announce a target more than once.
+type stubWorkers struct {
+	mu  sync.Mutex
+	ids map[proto.TargetTargetID]bool
+}
+
+func (w *stubWorkers) add(id proto.TargetTargetID) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.ids[id] {
+		return false
+	}
+	w.ids[id] = true
+	return true
+}
+
+// admitTarget handles one auto-attached target: an extension service worker
+// gets Fetch enabled on its session BEFORE being released — the whole point,
+// since its request path is fixed at start — and every waiting target is then
+// released, because a target left waiting hangs (new tabs included). A worker
+// whose enable failed runs on the live network, which must be said out loud.
+func admitTarget(browser *rod.Browser, e *proto.TargetAttachedToTarget, seen *stubWorkers, logf func(string, ...interface{}), verbose bool) {
+	sess := browser.Timeout(defaultTimeout).PageFromSession(e.SessionID)
+	if stubWorkerTarget(e.TargetInfo) && seen.add(e.TargetInfo.TargetID) {
+		if err := (proto.FetchEnable{
+			Patterns: []*proto.FetchRequestPattern{{URLPattern: "*", RequestStage: proto.FetchRequestStageRequest}},
+		}).Call(sess); err != nil {
+			logf("worker %s → not intercepted, cannot enable: %v", e.TargetInfo.URL, err)
+		} else if verbose {
+			logf("worker %s → intercepting", e.TargetInfo.URL)
+		}
+	}
+	if e.WaitingForDebugger {
+		if err := (proto.RuntimeRunIfWaitingForDebugger{}).Call(sess); err != nil {
+			logf("target %s → cannot resume: %v", e.TargetInfo.URL, err)
+		}
+	}
 }
 
 // answerPause resolves one paused request. Every pause must be answered or the

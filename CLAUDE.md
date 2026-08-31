@@ -62,12 +62,35 @@ Chrome (pinned Chromium 128 via rod's cache):
 - `ReturnByValue` results for NaN/Infinity/-0 arrive in `UnserializableValue`
   with `Value` empty — read it (`remoteObjectValue`) or they print as null.
 - Browser-level `Fetch.enable` (`urlPattern "*"`, Request stage) intercepts
-  pages, content scripts AND MV3 extension SW fetches on one session; the
-  interception itself bypasses the HTTP cache; redirect hops re-pause carrying
-  `RedirectedRequestID` on the pause event (no Network domain needed). It
-  applies per COMMITTED DOCUMENT: a page whose document committed before the
-  enable keeps the live network forever — no pause events at all — until it is
-  re-navigated. SW fetches are covered whenever the worker started.
+  pages and content scripts; the interception itself bypasses the HTTP cache;
+  redirect hops re-pause carrying `RedirectedRequestID` on the pause event (no
+  Network domain needed). It applies per COMMITTED DOCUMENT: a page whose
+  document committed before the enable keeps the live network forever — no
+  pause events at all — until it is re-navigated.
+- An MV3 worker's ORGANIC fetches (its own extension logic) NEVER pause under
+  the browser-level enable — only fetches issued through a debugger eval do,
+  which is how an eval-only spike wrongly "verified" full SW coverage. Worse:
+  the worker's request path bakes interception in at WORKER START, so enabling
+  Fetch on an already-running worker's session also changes nothing organic
+  (fresh-profile installs restart the worker soon after launch, masking this;
+  reused profiles reproduce it deterministically). The working model is
+  Playwright's: Target.setAutoAttach with WaitForDebuggerOnStart+Flatten,
+  enable Fetch on the attached session, then Runtime.runIfWaitingForDebugger —
+  the worker's first instruction runs intercepted. Workers already running
+  must be restarted (TargetCloseTarget; the registration survives — the
+  ServiceWorker domain is rejected on the browser session). Worker pauses can
+  arrive tagged with the worker session's ID — answer on the arriving session.
+  Auto-attached targets left waiting hang the whole browser's new tabs:
+  always resume them. CAVEAT that hid all of this for a while: with the dev
+  snapshot's field-trial config ACTIVE the browser routes organic worker
+  fetches through browser-level interception after all — so a test browser
+  missing configureExperiments (as baseLauncher was) passes tests the shipped
+  configuration fails.
+- rod's `Browser.Connect` ends with `SetDiscoverTargets{Discover: true}`, so
+  the TargetCreated replay of existing targets fires before any EachEvent
+  subscription exists and a later re-call is a no-transition no-op that
+  replays nothing. Enumerate existing targets with `TargetGetTargets`;
+  TargetCreated is only good for targets that appear after subscribing.
 - `FetchFulfillRequest.Body` has no omitempty: nil marshals as JSON null and
   Chrome rejects the fulfill with "binary value expected" — always send at
   least `[]byte{}`.
@@ -77,11 +100,14 @@ Chrome (pinned Chromium 128 via rod's cache):
   session's events either way. The optional `proto.TargetSessionID` parameter
   only reports which session the event arrived on, which is what stub.go
   answers a pause back on (every pause observed here carries "").
-- A fetch launched by the FIRST `Runtime.evaluate` in a freshly-attached SW
-  flat session races browser-level interception and can wedge — the pause
-  never surfaces on any session while page interception stays healthy
-  (1-in-10 without mitigation). A prior attach/detach warm-up eval stabilizes
-  it (13/13); stub_test.go's sanity eval is that warm-up, kept deliberately.
+- Attaching a flat session to a worker WHILE its own intercepted request is
+  in flight can wedge the next eval-launched fetch: the pause never surfaces
+  on any session while page interception stays healthy, and the eval times
+  out (retrying works). Reproduced 9-in-10 in an E2E that attached mid-
+  traffic vs 10/10 once the worker's traffic settled first; a warm-up
+  attach/detach eval helps but does not suffice on its own under the shipped
+  flags. Practical shape: `sw eval 'fetch(...)'` under an active stub can
+  rarely time out if it races the extension's own stubbed traffic.
 
 ## Workflow (how this repo's features have shipped)
 

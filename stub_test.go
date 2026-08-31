@@ -456,15 +456,30 @@ const stubSWManifest = `{
   "name": "Stub SW Extension",
   "version": "1.0.0",
   "background": {"service_worker": "sw.js"},
+  "permissions": ["storage"],
   "host_permissions": ["<all_urls>"],
   "content_scripts": [{"matches": ["<all_urls>"], "js": ["cs.js"]}]
 }`
 
 // The content script proves the docs' claim that content-script fetches are
-// intercepted too: it writes what it got into a place the test can read.
+// intercepted too: it writes what it got into a place the test can read. The
+// message it sends triggers the worker's ORGANIC fetch below.
 const stubContentScript = `fetch("/api/user").then(r => r.text())
   .then(t => { document.title = "cs:" + t; })
-  .catch(e => { document.title = "cs-ERR:" + e.message; });`
+  .catch(e => { document.title = "cs-ERR:" + e.message; });
+chrome.runtime.sendMessage({url: location.origin + "/api/user"});`
+
+// The worker fetches as extension logic reacting to a message — no debugger
+// eval involved. That is the production shape the per-worker Fetch.enable
+// exists for: without it this fetch never pauses and hits the live network.
+const stubWorkerScript = `console.log("stub sw up");
+chrome.runtime.onMessage.addListener((msg, sender, respond) => {
+  fetch(msg.url).then(r => r.json())
+    .then(data => chrome.storage.local.set({organic: data}))
+    .catch(e => chrome.storage.local.set({organic: "ERR:" + e.message}));
+  respond("ok");
+  return true;
+});`
 
 // lockedBuffer lets the test read decision lines while answer goroutines may
 // still be writing them.
@@ -533,7 +548,7 @@ func TestStub_EndToEnd(t *testing.T) {
 	}
 	for name, body := range map[string]string{
 		"manifest.json": stubSWManifest,
-		"sw.js":         `console.log("stub sw up");`,
+		"sw.js":         stubWorkerScript,
 		"cs.js":         stubContentScript,
 	} {
 		if err := os.WriteFile(filepath.Join(extDir, name), []byte(body), 0644); err != nil {
@@ -615,17 +630,37 @@ func TestStub_EndToEnd(t *testing.T) {
 	}) {
 		t.Fatalf("content script fetch: title %q, want cs:{\"stub\":true}; decisions:\n%s", title, out.String())
 	}
-
 	// The same interception covers the extension's service worker.
 	sw, err := waitServiceWorker(browser, "", 15*time.Second)
 	if err != nil {
 		t.Fatalf("no service worker: %v", err)
 	}
-	// This is a sanity check AND a required warm-up: a fetch launched by the
-	// FIRST eval in a freshly-attached worker session races browser-level
-	// interception inside Chromium and can wedge with its pause never
-	// surfacing (1 in 10 without this; 13/13 with). The attach/detach cycle
-	// this eval performs leaves the worker stable for the fetch below.
+
+	// The ORGANIC fetch — the content script's message made the worker fetch
+	// as plain extension logic. Only the per-worker Fetch.enable intercepts
+	// it; the browser-level enable alone never pauses this one. The reload
+	// above re-sent the message with the stub live, so a stubbed value must
+	// land even if the initial page load's message raced the worker enable.
+	var organic string
+	if !pollUntil(10*time.Second, func() bool {
+		v, err := evalInServiceWorker(browser, sw,
+			`chrome.storage.local.get("organic").then(r => JSON.stringify(r.organic))`)
+		if err != nil {
+			return false
+		}
+		organic = v.Str()
+		return organic == `{"stub":true}`
+	}) {
+		t.Fatalf("organic sw fetch: got %q, want the stubbed body; decisions:\n%s", organic, out.String())
+	}
+
+	// With the worker's organic traffic settled, the eval path is exercised
+	// with no in-flight worker pause to race the attach.
+
+	// A sanity check that doubles as a stabilizer: attaching to a worker while
+	// its own intercepted traffic is in flight can wedge the next eval fetch
+	// (see CLAUDE.md), which is why the organic assertion above runs first —
+	// this extra attach/detach cycle then costs nothing and asserts evals work.
 	if v, err := evalInServiceWorker(browser, sw, "1 + 1"); err != nil || v.Int() != 2 {
 		after, lerr := listServiceWorkers(browser, "")
 		t.Fatalf("sw eval sanity: v=%v err=%v; workers now: %v (%v); decisions:\n%s", v, err, after, lerr, out.String())

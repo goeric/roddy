@@ -348,6 +348,13 @@ typo in a rule fails the command before the browser is touched.
 
 Details that make stubbed tests behave:
 
+- Extension service workers get their own interception, armed before each
+  worker runs its first instruction — a worker's own fetches bypass
+  browser-wide interception, and its request path is fixed the moment it
+  starts. Workers already running when the stub starts are therefore
+  restarted (their in-memory state resets; stored state is untouched), and
+  workers stay awake while the stub runs.
+
 - Globs match the URL exactly as Chrome reports it; Playwright's base-URL
   normalization is not ported, so write a fully-qualified pattern the way the
   request really appears (scheme, host, port included) or start it with `**`.
