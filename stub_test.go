@@ -516,6 +516,24 @@ func pollUntil(timeout time.Duration, cond func() bool) bool {
 	}
 }
 
+// The prefix check is load-bearing twice over: an extension worker must be
+// restarted and enabled, a web app's service worker must be left alone.
+func TestStubWorkerTargets(t *testing.T) {
+	ext := &proto.TargetTargetInfo{Type: proto.TargetTargetInfoTypeServiceWorker, URL: "chrome-extension://abc/sw.js"}
+	web := &proto.TargetTargetInfo{Type: proto.TargetTargetInfoTypeServiceWorker, URL: "https://app.example.com/sw.js"}
+	page := &proto.TargetTargetInfo{Type: proto.TargetTargetInfoTypePage, URL: "https://app.example.com/"}
+
+	if !stubWorkerTarget(ext) {
+		t.Error("extension worker not recognized")
+	}
+	if stubWorkerTarget(web) || stubWorkerTarget(page) {
+		t.Error("non-extension target recognized as an extension worker")
+	}
+	if got := stubWebWorkers([]*proto.TargetTargetInfo{ext, web, page}); got != 1 {
+		t.Errorf("stubWebWorkers: got %d, want 1", got)
+	}
+}
+
 func TestStub_EndToEnd(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/page", func(w http.ResponseWriter, r *http.Request) {
@@ -565,6 +583,13 @@ func TestStub_EndToEnd(t *testing.T) {
 	]`))
 	if err != nil {
 		t.Fatal(err)
+	}
+
+	// The worker must already be running when the stub starts, so the
+	// restart-running-workers path is exercised deterministically rather
+	// than by launch timing.
+	if _, err := waitServiceWorker(browser, "", 15*time.Second); err != nil {
+		t.Fatalf("no service worker before the stub: %v", err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -684,6 +709,29 @@ func TestStub_EndToEnd(t *testing.T) {
 		return fetch(fetchText, srvA.URL+"/api/user") == `{"real":true}`
 	}) {
 		t.Fatal("requests still stubbed after stop")
+	}
+	// The stop must disarm the auto-attach and detach the worker sessions, or
+	// the browser stays wedged: a new page would wait for a debugger forever,
+	// and the worker's fetches would pause with nobody answering.
+	newPage, err := browser.Page(proto.TargetCreateTarget{URL: srvA.URL + "/page"})
+	if err != nil {
+		t.Fatalf("new page after stop: %v", err)
+	}
+	if err := newPage.Timeout(15 * time.Second).WaitLoad(); err != nil {
+		t.Fatalf("new page after stop never loaded (auto-attach still armed?): %v", err)
+	}
+	newPage.MustClose()
+	swAfter, err := waitServiceWorker(browser, "", 15*time.Second)
+	if err != nil {
+		t.Fatalf("no service worker after stop: %v", err)
+	}
+	swReal, err := evalInServiceWorker(browser, swAfter,
+		fmt.Sprintf(`fetch(%q).then(r => r.text())`, srvA.URL+"/api/user"))
+	if err != nil {
+		t.Fatalf("sw fetch after stop (worker session still intercepting?): %v", err)
+	}
+	if swReal.Str() != `{"real":true}` {
+		t.Errorf("sw fetch after stop: got %q, want the real body", swReal.Str())
 	}
 
 	for _, want := range []string{

@@ -305,9 +305,10 @@ Notes:
 
 ### Stubbing network requests
 
-`roddy stub` intercepts the browser's network requests — from pages, content
-scripts, and extension service workers alike — and answers them from a rules
-file, so tests run against canned responses instead of live servers:
+`roddy stub` intercepts requests from pages, content scripts, and extension
+service workers, and answers them from a rules file, so tests run against
+canned responses instead of live servers (a web app's own service worker is
+out of scope — its traffic stays live, and the stub says so at startup):
 
 ```bash
 roddy stub rules.json           # holds the session until Ctrl+C

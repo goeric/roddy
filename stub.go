@@ -528,7 +528,8 @@ func runStub(ctx context.Context, browser *rod.Browser, rules []stubRule, out io
 		return fmt.Errorf("failed to auto-attach targets: %w", err)
 	}
 	// setAutoAttach returns before existing targets attach; a dummy call
-	// flushes it (Playwright's crBrowser workaround).
+	// flushes it (Playwright's crBrowser workaround). Its error is irrelevant:
+	// a wedged browser fails loudly at the listing below.
 	_, _ = proto.TargetGetTargetInfo{}.Call(browser.Timeout(defaultTimeout))
 
 	// …and the workers already running, whose requests would bypass the stub
@@ -539,12 +540,12 @@ func runStub(ctx context.Context, browser *rod.Browser, rules []stubRule, out io
 	// on the browser session.)
 	list, err := proto.TargetGetTargets{}.Call(browser.Timeout(defaultTimeout))
 	if err != nil {
-		return fmt.Errorf("failed to list service workers: %w", err)
+		return fmt.Errorf("failed to list targets: %w", err)
 	}
 	for _, t := range list.TargetInfos {
 		if stubWorkerTarget(t) {
 			if _, err := (proto.TargetCloseTarget{TargetID: t.TargetID}).Call(browser.Timeout(defaultTimeout)); err != nil {
-				logf("worker %s → cannot restart: %v (its requests stay live until it restarts)", t.URL, err)
+				logf("worker %s → cannot restart: %v (its requests bypass the stub)", t.URL, err)
 			}
 		}
 	}
@@ -553,8 +554,17 @@ func runStub(ctx context.Context, browser *rod.Browser, rules []stubRule, out io
 	if ctx.Err() != nil {
 		// Reached only when the caller cancels (the tests do; Ctrl+C kills the
 		// process instead, and Chrome's own disconnect cleanup then releases
-		// interception and auto-continues the in-flight pauses). Release it
-		// explicitly so a canceled-but-still-connected browser flows again.
+		// everything below and auto-continues the in-flight pauses). Order
+		// matters, and each piece must be released or the browser stays
+		// wedged: disarm the auto-attach first (its resume handler is gone
+		// with wait, so a target attached after this point would wait
+		// forever), then detach the worker sessions (dropping their enables
+		// and letting the workers idle-suspend again), then the browser-level
+		// interception.
+		_ = proto.TargetSetAutoAttach{AutoAttach: false, Flatten: true}.Call(browser.Timeout(defaultTimeout))
+		for _, sid := range seen.allSessions() {
+			_ = proto.TargetDetachFromTarget{SessionID: sid}.Call(browser.Timeout(defaultTimeout))
+		}
 		_ = proto.FetchDisable{}.Call(browser.Timeout(defaultTimeout))
 		return nil
 	}
@@ -568,11 +578,15 @@ func stubWorkerTarget(t *proto.TargetTargetInfo) bool {
 		strings.HasPrefix(t.URL, "chrome-extension://")
 }
 
-// stubWorkers tracks which worker targets already have interception, since
-// discovery can announce a target more than once.
+// stubWorkers tracks which worker targets already have interception, since a
+// target can be announced more than once, and which sessions carry an enable
+// so a deliberate stop can release them. ids grows one entry per worker start
+// for the stub's lifetime — admitted workers stay attached and awake, so new
+// entries need an extension reload or crash; it stays small.
 type stubWorkers struct {
-	mu  sync.Mutex
-	ids map[proto.TargetTargetID]bool
+	mu       sync.Mutex
+	ids      map[proto.TargetTargetID]bool
+	sessions []proto.TargetSessionID
 }
 
 func (w *stubWorkers) add(id proto.TargetTargetID) bool {
@@ -583,6 +597,18 @@ func (w *stubWorkers) add(id proto.TargetTargetID) bool {
 	}
 	w.ids[id] = true
 	return true
+}
+
+func (w *stubWorkers) addSession(sid proto.TargetSessionID) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.sessions = append(w.sessions, sid)
+}
+
+func (w *stubWorkers) allSessions() []proto.TargetSessionID {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]proto.TargetSessionID{}, w.sessions...)
 }
 
 // admitTarget handles one auto-attached target: an extension service worker
@@ -597,13 +623,22 @@ func admitTarget(browser *rod.Browser, e *proto.TargetAttachedToTarget, seen *st
 			Patterns: []*proto.FetchRequestPattern{{URLPattern: "*", RequestStage: proto.FetchRequestStageRequest}},
 		}).Call(sess); err != nil {
 			logf("worker %s → not intercepted, cannot enable: %v", e.TargetInfo.URL, err)
-		} else if verbose {
-			logf("worker %s → intercepting", e.TargetInfo.URL)
+		} else {
+			seen.addSession(e.SessionID)
+			if verbose {
+				logf("worker %s → intercepting", e.TargetInfo.URL)
+			}
 		}
 	}
 	if e.WaitingForDebugger {
-		if err := (proto.RuntimeRunIfWaitingForDebugger{}).Call(sess); err != nil {
-			logf("target %s → cannot resume: %v", e.TargetInfo.URL, err)
+		// A target left waiting hangs — a tab that never loads, a dead worker —
+		// so the resume is retried once before the failure is reported.
+		err := (proto.RuntimeRunIfWaitingForDebugger{}).Call(sess)
+		if err != nil {
+			err = (proto.RuntimeRunIfWaitingForDebugger{}).Call(browser.Timeout(defaultTimeout).PageFromSession(e.SessionID))
+		}
+		if err != nil {
+			logf("target %s → cannot resume: %v (it stays blocked; close it or restart the browser)", e.TargetInfo.URL, err)
 		}
 	}
 }
@@ -702,6 +737,20 @@ func stubOpenPages(targets []*proto.TargetTargetInfo) int {
 	return n
 }
 
+// stubWebWorkers counts running service workers that are NOT an extension's:
+// their traffic obeys only the interception state from their own start, and
+// the stub neither restarts nor enables them (extension testing is the
+// scope), so it bypasses the rules with no decision line — worth a note.
+func stubWebWorkers(targets []*proto.TargetTargetInfo) int {
+	n := 0
+	for _, t := range targets {
+		if t.Type == proto.TargetTargetInfoTypeServiceWorker && !strings.HasPrefix(t.URL, "chrome-extension://") {
+			n++
+		}
+	}
+	return n
+}
+
 // cmdStub handles "roddy stub <rules-file>": browser-wide request stubbing
 // held in the foreground, logs --follow style, until interrupted.
 func cmdStub(args []string) {
@@ -728,8 +777,13 @@ func cmdStub(args []string) {
 	// them behind the user's back.
 	if list, lerr := (proto.TargetGetTargets{}).Call(browser.Timeout(defaultTimeout)); lerr != nil {
 		fmt.Fprintf(os.Stderr, "note: cannot check for open pages: %v\n", lerr)
-	} else if n := stubOpenPages(list.TargetInfos); n > 0 {
-		fmt.Fprintf(os.Stderr, "note: %d open page(s) keep the live network until reloaded — start the stub first, or roddy reload\n", n)
+	} else {
+		if n := stubOpenPages(list.TargetInfos); n > 0 {
+			fmt.Fprintf(os.Stderr, "note: %d open page(s) keep the live network until reloaded — start the stub first, or roddy reload\n", n)
+		}
+		if n := stubWebWorkers(list.TargetInfos); n > 0 {
+			fmt.Fprintf(os.Stderr, "note: %d web service worker(s) keep the live network — only extension workers are intercepted\n", n)
+		}
 	}
 
 	fmt.Printf("stub: %d rules active (Ctrl+C to stop)\n", len(rules))

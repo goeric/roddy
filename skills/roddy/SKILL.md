@@ -213,8 +213,9 @@ Gotchas worth knowing:
 
 ### Stubbing the network
 
-`roddy stub rules.json` intercepts every request the browser makes — pages,
-content scripts, and extension service workers — and answers matching ones
+`roddy stub rules.json` intercepts requests from pages, content scripts, and
+extension service workers — not a web app's own service worker, whose traffic
+stays live (the stub notes it at startup) — and answers matching ones
 from a JSON rules file. Starting it restarts running extension workers (their
 request path is fixed at start, so interception must be armed first; stored
 state survives, in-memory state resets), and workers stay awake while the
