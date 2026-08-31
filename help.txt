@@ -1,13 +1,19 @@
 roddy - Chrome automation from the command line
 
 Browser lifecycle:
-  roddy start [--show] [--insecure | -k] [--extension PATH] [--no-extension]
+  roddy start [--show] [--insecure | -k] [--no-sandbox] [--extension PATH]
+              [--no-extension]
                                   Launch Chrome (headless by default, --show for visible)
                                   --extension loads an unpacked directory or a
                                   .crx/.zip archive; repeat for several. In a
                                   WXT project (wxt.config.* present), start
                                   auto-loads a built .output/chrome-mv3 and
-                                  says so; --no-extension skips that
+                                  says so; --no-extension skips that.
+                                  Chrome runs sandboxed by default;
+                                  --no-sandbox turns that off for containers
+                                  and gVisor, where start also falls back to
+                                  it on its own (and as root, where Chrome
+                                  refuses to sandbox)
   roddy connect <host:port>      Connect to existing Chrome on remote debug port
   roddy stop                     Shut down Chrome
   roddy status                   Show browser status

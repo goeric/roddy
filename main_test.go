@@ -1163,6 +1163,118 @@ func TestParseStartArgs_UnknownFlag(t *testing.T) {
 	}
 }
 
+func TestParseStartArgs_NoSandboxFlag(t *testing.T) {
+	opts, err := parseStartArgs([]string{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if opts.noSandbox {
+		t.Error("expected noSandbox=false with no flags")
+	}
+	opts, err = parseStartArgs([]string{"--no-sandbox"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !opts.noSandbox {
+		t.Error("expected noSandbox=true when --no-sandbox is passed")
+	}
+}
+
+// sandbox defaults
+// ================
+
+func TestLaunchUnsandboxed(t *testing.T) {
+	cases := []struct {
+		flag bool
+		euid int
+		want bool
+	}{
+		{false, 501, false}, // the default: sandboxed
+		{true, 501, true},   // --no-sandbox
+		{false, 0, true},    // root: Chrome refuses to sandbox at all
+		{true, 0, true},
+	}
+	for _, c := range cases {
+		if got := launchUnsandboxed(c.flag, c.euid); got != c.want {
+			t.Errorf("launchUnsandboxed(%v, %d) = %v, want %v", c.flag, c.euid, got, c.want)
+		}
+	}
+}
+
+func TestNewStartLauncher_SandboxedByDefault(t *testing.T) {
+	l := newStartLauncher(t.TempDir(), true, false, nil)
+	if l.Has("no-sandbox") {
+		t.Error("--no-sandbox set on a default launch")
+	}
+	if l.Has("single-process") {
+		t.Error("--single-process set on a default launch")
+	}
+}
+
+func TestNewStartLauncher_Unsandboxed(t *testing.T) {
+	l := newStartLauncher(t.TempDir(), true, true, nil)
+	if !l.Has("no-sandbox") {
+		t.Error("--no-sandbox missing from an unsandboxed launch")
+	}
+	if got, want := l.Has("single-process"), singleProcessSupported(); got != want {
+		t.Errorf("single-process = %v, want %v (platform: %v)", got, want, want)
+	}
+}
+
+// TestSandboxedLaunch is the test that matters for the sandbox default: a
+// plain start must come up with Chrome's sandbox intact and still drive a
+// page. Environments whose kernel cannot sandbox Chrome — root, containers,
+// gVisor — are the fallback's job, so they skip rather than fail.
+func TestSandboxedLaunch(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: Chrome cannot sandbox itself")
+	}
+	l := newStartLauncher(t.TempDir(), true, false, nil)
+	u, err := l.Launch()
+	if err != nil {
+		if strings.Contains(err.Error(), "sandbox") || strings.Contains(err.Error(), "namespace") {
+			t.Skipf("kernel cannot sandbox Chrome here: %v", err)
+		}
+		t.Fatalf("sandboxed launch failed: %v", err)
+	}
+	browser := rod.New().ControlURL(u).MustConnect()
+	defer func() {
+		browser.MustClose()
+		// Browser.close returns before the process is gone, and Chrome is this
+		// test's child: reap it, or t.TempDir races the profile teardown.
+		if proc, err := os.FindProcess(l.PID()); err == nil {
+			_, _ = proc.Wait()
+		}
+	}()
+
+	page := browser.MustPage(env.server.URL + "/")
+	page.MustWaitLoad()
+	if got := page.MustInfo().Title; got != "Test Page" {
+		t.Errorf("title = %q, want %q", got, "Test Page")
+	}
+}
+
+// proxy helper
+// ============
+
+func TestReadProxyAuthHeader(t *testing.T) {
+	got, err := readProxyAuthHeader(strings.NewReader("Basic abc123\n"))
+	if err != nil || got != "Basic abc123" {
+		t.Errorf("readProxyAuthHeader = %q, %v; want %q, nil", got, err, "Basic abc123")
+	}
+	// A writer that closes without a newline still delivered the header.
+	got, err = readProxyAuthHeader(strings.NewReader("Basic abc123"))
+	if err != nil || got != "Basic abc123" {
+		t.Errorf("readProxyAuthHeader (no newline) = %q, %v; want %q, nil", got, err, "Basic abc123")
+	}
+	if _, err := readProxyAuthHeader(strings.NewReader("")); err == nil {
+		t.Error("expected an error for empty stdin")
+	}
+	if _, err := readProxyAuthHeader(strings.NewReader("\n")); err == nil {
+		t.Error("expected an error for a blank line")
+	}
+}
+
 func TestInsecureFlag_WithSelfSignedCert(t *testing.T) {
 	// Create HTTPS server with self-signed certificate
 	mux := http.NewServeMux()

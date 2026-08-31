@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bufio"
 	_ "embed"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -438,7 +440,7 @@ func bringToFront(page *rod.Page) {
 
 // --- Commands ---
 
-const startUsage = "usage: roddy start [--show] [--insecure] [--extension PATH] [--no-extension]"
+const startUsage = "usage: roddy start [--show] [--insecure] [--no-sandbox] [--extension PATH] [--no-extension]"
 
 // startOptions holds the parsed flags for the "start" command.
 type startOptions struct {
@@ -446,6 +448,7 @@ type startOptions struct {
 	headless         bool
 	extensions       []string
 	noExtension      bool // opt out of WXT auto-detection
+	noSandbox        bool // launch Chrome without its sandbox
 }
 
 // parseStartArgs parses the flags for the "start" command.
@@ -459,6 +462,7 @@ func parseStartArgs(args []string) (startOptions, error) {
 	fs.BoolVar(&opts.ignoreCertErrors, "k", false, "")
 	fs.Var(&extensions, "extension", "")
 	fs.BoolVar(&opts.noExtension, "no-extension", false, "")
+	fs.BoolVar(&opts.noSandbox, "no-sandbox", false, "")
 	show := fs.Bool("show", false, "")
 
 	if parseErr := fs.Parse(args); parseErr != nil {
@@ -473,6 +477,49 @@ func parseStartArgs(args []string) (startOptions, error) {
 	opts.headless = !*show
 	opts.extensions = extensions
 	return opts, nil
+}
+
+// launchUnsandboxed reports whether start must skip Chrome's sandbox up
+// front: the user asked with --no-sandbox, or the process runs as root, which
+// Chrome refuses to sandbox at all.
+func launchUnsandboxed(noSandboxFlag bool, euid int) bool {
+	return noSandboxFlag || euid == 0
+}
+
+// newStartLauncher builds the launcher for one start attempt. Sandboxed is the
+// default; unsandboxed adds --no-sandbox and, where the platform takes it,
+// --single-process — the environments that need one tend to need the other
+// (gVisor's multi-process compositor hangs screenshots,
+// notes/gvisor-screenshots/README.md), and --single-process without a reason
+// widens every renderer bug into a whole-browser compromise.
+func newStartLauncher(dataDir string, headless, unsandboxed bool, extensions []extensionInfo) *launcher.Launcher {
+	l := launcher.New().
+		Set("disable-gpu").
+		Leakless(false). // Keep Chrome alive after CLI exits
+		UserDataDir(dataDir).
+		Headless(headless)
+
+	if unsandboxed {
+		l = l.Set("no-sandbox")
+		if singleProcessSupported() {
+			l = l.Set("single-process")
+		}
+	}
+
+	l = configureExperiments(l)
+
+	// When in non-headless mode, make sure that we show the startup window immediately
+	// (instead of showing a window only after calling "roddy open")
+	if !headless {
+		l = l.Delete("no-startup-window")
+	}
+
+	l = configureExtensions(l, headless, extensions)
+
+	if bin := os.Getenv("ROD_CHROME_BIN"); bin != "" {
+		l = l.Bin(bin)
+	}
+	return l
 }
 
 func cmdStart(args []string) {
@@ -514,31 +561,6 @@ func cmdStart(args []string) {
 
 	extensions := loadExtensions(opts.extensions)
 
-	l := launcher.New().
-		Set("no-sandbox").
-		Set("disable-gpu").
-		Leakless(false). // Keep Chrome alive after CLI exits
-		UserDataDir(dataDir).
-		Headless(headless)
-
-	if singleProcessSupported() {
-		l = l.Set("single-process") // Required for screenshots in gVisor/container environments
-	}
-
-	l = configureExperiments(l)
-
-	// When in non-headless mode, make sure that we show the startup window immediately
-	// (instead of showing a window only after calling "roddy open")
-	if !headless {
-		l = l.Delete("no-startup-window")
-	}
-
-	l = configureExtensions(l, headless, extensions)
-
-	if bin := os.Getenv("ROD_CHROME_BIN"); bin != "" {
-		l = l.Bin(bin)
-	}
-
 	// Detect authenticated proxy and launch helper if needed
 	var proxyPID, proxyPort int
 	if server, user, pass, needed := detectProxy(); needed {
@@ -552,31 +574,59 @@ func cmdStart(args []string) {
 		proxyPort = ln.Addr().(*net.TCPAddr).Port
 		ln.Close()
 
-		// Launch ourselves as the proxy helper in the background
+		// Launch ourselves as the proxy helper in the background. The auth
+		// header goes over stdin, not argv: argv is readable by every user on
+		// the machine via ps for the helper's whole (detached) lifetime.
 		exe, _ := os.Executable()
 		cmd := exec.Command(exe, "_proxy",
-			strconv.Itoa(proxyPort), server, authHeader)
+			strconv.Itoa(proxyPort), server)
+		stdin, err := cmd.StdinPipe()
+		if err != nil {
+			fatal("failed to start proxy helper: %v", err)
+		}
 		setSysProcAttr(cmd)
 		if err := cmd.Start(); err != nil {
 			fatal("failed to start proxy helper: %v", err)
 		}
 		proxyPID = cmd.Process.Pid
+		if _, err := io.WriteString(stdin, authHeader+"\n"); err != nil {
+			signalPID(proxyPID)
+			fatal("failed to hand credentials to the proxy helper: %v", err)
+		}
+		stdin.Close()
 		// Detach so it survives after we exit
 		cmd.Process.Release()
 
 		// Wait for the proxy to be ready
 		time.Sleep(500 * time.Millisecond)
 
-		l.Set("proxy-server", fmt.Sprintf("http://127.0.0.1:%d", proxyPort))
 		ignoreCertErrors = true // Proxy requires ignoring cert errors
 		fmt.Printf("Auth proxy started (PID %d, port %d) -> %s\n", proxyPID, proxyPort, server)
 	}
 
-	if ignoreCertErrors {
-		l.Set("ignore-certificate-errors")
+	launch := func(unsandboxed bool) (*launcher.Launcher, string, error) {
+		l := newStartLauncher(dataDir, headless, unsandboxed, extensions)
+		if proxyPort > 0 {
+			l.Set("proxy-server", fmt.Sprintf("http://127.0.0.1:%d", proxyPort))
+		}
+		if ignoreCertErrors {
+			l.Set("ignore-certificate-errors")
+		}
+		u, err := l.Launch()
+		return l, u, err
 	}
 
-	debugURL, err := l.Launch()
+	unsandboxed := launchUnsandboxed(opts.noSandbox, os.Geteuid())
+	if unsandboxed && !opts.noSandbox {
+		fmt.Fprintln(os.Stderr, "note: running as root; Chrome cannot sandbox itself, launching with --no-sandbox")
+	}
+	l, debugURL, err := launch(unsandboxed)
+	if err != nil && !unsandboxed {
+		// Kernels without sandbox support (containers, gVisor) fail here; the
+		// retry launches the way those environments require.
+		fmt.Fprintln(os.Stderr, "note: sandboxed launch failed; retrying with --no-sandbox")
+		l, debugURL, err = launch(true)
+	}
 	if err != nil {
 		// The proxy helper was spawned before the launch; without a state file
 		// recording its PID, nothing could ever stop it.
@@ -2102,15 +2152,34 @@ func detectProxy() (server, user, pass string, needed bool) {
 	return server, user, pass, true
 }
 
-// cmdInternalProxy is a hidden subcommand: roddy _proxy <port> <upstream> <authHeader>
-// It runs a local auth proxy that forwards to the upstream proxy with credentials.
+// readProxyAuthHeader reads the Proxy-Authorization value the parent start
+// command writes to the helper's stdin, one line, credentials included —
+// which is why it is not an argv argument: ps shows argv to every user on the
+// machine for as long as the helper runs.
+func readProxyAuthHeader(r io.Reader) (string, error) {
+	line, err := bufio.NewReader(r).ReadString('\n')
+	if header := strings.TrimSpace(line); header != "" {
+		return header, nil
+	}
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", err
+	}
+	return "", errors.New("no auth header arrived on stdin")
+}
+
+// cmdInternalProxy is a hidden subcommand: roddy _proxy <port> <upstream>,
+// with the Proxy-Authorization header on stdin. It runs a local auth proxy
+// that forwards to the upstream proxy with credentials.
 func cmdInternalProxy(args []string) {
-	if len(args) < 3 {
-		fatal("usage: roddy _proxy <port> <upstream> <authHeader>")
+	if len(args) < 2 {
+		fatal("usage: roddy _proxy <port> <upstream> (auth header on stdin)")
 	}
 	port := args[0]
 	upstream := args[1]
-	authHeader := args[2]
+	authHeader, err := readProxyAuthHeader(os.Stdin)
+	if err != nil {
+		fatal("proxy helper: %v", err)
+	}
 
 	listener, err := net.Listen("tcp", "127.0.0.1:"+port)
 	if err != nil {
