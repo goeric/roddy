@@ -61,6 +61,21 @@ Chrome (pinned Chromium 128 via rod's cache):
   carry a one-level preview. The Log domain IS supported on worker targets.
 - `ReturnByValue` results for NaN/Infinity/-0 arrive in `UnserializableValue`
   with `Value` empty — read it (`remoteObjectValue`) or they print as null.
+- Browser-level `Fetch.enable` (`urlPattern "*"`, Request stage) intercepts
+  pages, content scripts AND MV3 extension SW fetches on one session; the
+  interception itself bypasses the HTTP cache; redirect hops re-pause carrying
+  `RedirectedRequestID` on the pause event (no Network domain needed).
+- `FetchFulfillRequest.Body` has no omitempty: nil marshals as JSON null and
+  Chrome rejects the fulfill with "binary value expected" — always send at
+  least `[]byte{}`.
+- rod `EachEvent`: a callback WITHOUT the `proto.TargetSessionID` parameter
+  receives only the subscribing session's events; add the parameter to see
+  every session's (how logs.go and stub.go get flat-session events).
+- A fetch launched by the FIRST `Runtime.evaluate` in a freshly-attached SW
+  flat session races browser-level interception and can wedge — the pause
+  never surfaces on any session while page interception stays healthy
+  (1-in-10 without mitigation). A prior attach/detach warm-up eval stabilizes
+  it (13/13); stub_test.go's sanity eval is that warm-up, kept deliberately.
 
 ## Workflow (how this repo's features have shipped)
 

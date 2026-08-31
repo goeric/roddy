@@ -70,7 +70,23 @@ unilaterally. Whatever lands must also consider `--local` (a WXT project wants
 a project-local session) and stale builds (warn when `.output/chrome-mv3` is
 older than the newest file under `src/`? possibly out of scope).
 
-## 3. Network stubbing (large — architectural, brainstorm first)
+## 3. Network stubbing (large — architectural, brainstorm first) — v1 SHIPPED
+
+Landed 2026-08 after a design round with the maintainer and a Playwright
+source-mining pass. Architecture A (foreground `roddy stub rules.json`, the
+`logs --follow` resident pattern), file-only rules, Playwright-compatible
+conventions: their glob dialect (ported from urlMatch.ts), their verb and
+field names (fulfill/abort/continue; status/headers/contentType/body/json/
+path), their abort codes. First match wins top-down; unmatched requests
+continue. One browser-level `Fetch.enable` covers pages, content scripts and
+MV3 extension SWs (verified — no per-target machinery needed). Preflights for
+stubbed endpoints get a synthesized 204, others pass through; cross-origin
+fulfills reflect CORS headers; redirect hops pass through unmatched. Deferred
+deliberately: `times`, `fallback` chaining, response mutation (route.fetch
+style), HAR replay, websockets, inline CLI rules, live rules reload. New
+hard-won facts from this work (nil fulfill Body, rod EachEvent session
+filtering, the SW first-attach interception race) are in CLAUDE.md. The
+original design notes follow.
 
 The remaining gap against Playwright: intercepting/stubbing the requests an
 extension or page makes (`Fetch.enable` + `Fetch.requestPaused` →

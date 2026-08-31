@@ -303,6 +303,61 @@ Notes:
   on its own — the tab was closed, or the browser went away — reports the
   reason on stderr and exits 2.
 
+### Stubbing network requests
+
+`roddy stub` intercepts the browser's network requests — from pages, content
+scripts, and extension service workers alike — and answers them from a rules
+file, so tests run against canned responses instead of live servers:
+
+```bash
+roddy stub rules.json           # holds the session until Ctrl+C
+# stub: 3 rules active (Ctrl+C to stop)
+# GET https://api.example.com/user → fulfill 200 (rule 1)
+# POST https://t.example.com/beacon → abort internetdisconnected (rule 2)
+```
+
+The rules file is a JSON array; the first matching rule wins, top to bottom,
+and requests no rule matches continue to the real network untouched:
+
+```json
+[
+  {"url": "**/api/user",      "fulfill": {"json": {"name": "test"}}},
+  {"url": "**/telemetry/**",  "abort": "internetdisconnected"},
+  {"url": "**/api/**", "method": "POST", "fulfill": {"status": 500, "body": "boom"}},
+  {"url": "**/big-fixture",   "fulfill": {"path": "fixture.json"}}
+]
+```
+
+The conventions are Playwright's, so patterns and verbs copy verbatim from
+Playwright tests: URL globs where `*` stays inside a path segment, `**`
+crosses segments, `{a,b}` alternates and `?` is a literal; verbs `fulfill`
+(`status` default 200, `headers`, `contentType`, and one of `body` / `json` /
+`path`, the last resolved relative to the rules file), `abort` (a Playwright
+error code such as `internetdisconnected` or `connectionrefused`, or `true`
+for `failed`), and `continue`. Everything is validated up front — a typo in a
+rule fails the command before the browser is touched.
+
+Details that make stubbed tests behave:
+
+- CORS preflights are answered with a synthesized 204 when the request they
+  announce would be fulfilled or aborted — the real server may not exist — and
+  passed through otherwise, so genuine CORS behavior stays testable.
+- Cross-origin fulfills get `Access-Control-Allow-Origin` reflected
+  automatically unless the rule sets its own.
+- Redirect hops pass through without re-matching (only the first request in a
+  chain is stubbed), and interception bypasses the HTTP cache, so every
+  request actually reaches the rules.
+- Stopping the stub (Ctrl+C) releases interception; run one stub at a time.
+
+Run it in the background from a test script and stop it when done:
+
+```bash
+roddy stub rules.json & STUB=$!
+roddy open https://example.com
+roddy storage get lastSync         # the extension saw the stubbed API
+kill $STUB
+```
+
 ### Navigate
 
 ```bash
