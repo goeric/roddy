@@ -248,7 +248,6 @@ func compileStubFulfill(f *stubFulfillJSON, fixtureDir string) (*proto.FetchFulf
 	}
 
 	sources := 0
-	contentType := f.ContentType
 	if f.Body != nil {
 		sources++
 	}
@@ -263,6 +262,8 @@ func compileStubFulfill(f *stubFulfillJSON, fixtureDir string) (*proto.FetchFulf
 	if sources > 1 {
 		return nil, fmt.Errorf(`fulfill takes at most one of "body", "json", "path"`)
 	}
+
+	contentType := f.ContentType
 	switch {
 	case f.Body != nil:
 		p.Body = []byte(*f.Body)

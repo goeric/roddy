@@ -123,7 +123,7 @@ func TestLoadStubRules(t *testing.T) {
 	if rules[0].fulfill == nil || string(rules[0].fulfill.Body) != `{"name":"test"}` {
 		t.Errorf("rule 1: json body wrong: %+v", rules[0].fulfill)
 	}
-	if got := headerValue(rules[0].fulfill.ResponseHeaders, "Content-Type"); got != "application/json" {
+	if got := headerEntry(rules[0].fulfill.ResponseHeaders, "Content-Type"); got != "application/json" {
 		t.Errorf("rule 1: json implies application/json, got %q", got)
 	}
 	if rules[1].method != "GET" {
@@ -132,7 +132,7 @@ func TestLoadStubRules(t *testing.T) {
 	if rules[1].fulfill.ResponseCode != 500 {
 		t.Errorf("rule 2: status not applied: %d", rules[1].fulfill.ResponseCode)
 	}
-	if got := headerValue(rules[1].fulfill.ResponseHeaders, "Content-Type"); got != "text/plain" {
+	if got := headerEntry(rules[1].fulfill.ResponseHeaders, "Content-Type"); got != "text/plain" {
 		t.Errorf("rule 2: contentType not applied: %q", got)
 	}
 	// path fixtures are read at load time, relative to the rules file
@@ -298,12 +298,12 @@ func TestStubFulfillCORS(t *testing.T) {
 		"Access-Control-Allow-Credentials": "true",
 		"Vary":                             "Origin",
 	} {
-		if got := headerValue(p.ResponseHeaders, name); got != want {
+		if got := headerEntry(p.ResponseHeaders, name); got != want {
 			t.Errorf("%s: got %q, want %q", name, got, want)
 		}
 	}
 	p = stubFulfillPayload(rules[0], pauseEvent("GET", "https://h/x", nil))
-	if got := headerValue(p.ResponseHeaders, "Access-Control-Allow-Origin"); got != "" {
+	if got := headerEntry(p.ResponseHeaders, "Access-Control-Allow-Origin"); got != "" {
 		t.Errorf("unexpected ACAO on same-origin fulfill: %q", got)
 	}
 
@@ -313,7 +313,7 @@ func TestStubFulfillCORS(t *testing.T) {
 		t.Fatal(err)
 	}
 	p = stubFulfillPayload(rules[0], pauseEvent("GET", "https://h/x", map[string]string{"Origin": "https://o"}))
-	if got := headerValue(p.ResponseHeaders, "Access-Control-Allow-Origin"); got != "*" {
+	if got := headerEntry(p.ResponseHeaders, "Access-Control-Allow-Origin"); got != "*" {
 		t.Errorf("rule's own ACAO overridden: %q", got)
 	}
 	// Reflecting into the copy must not accumulate onto the shared template.
@@ -333,7 +333,7 @@ func TestStubFulfillContentType(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i, want := range []string{"text/explicit", "text/from-field", "text/explicit"} {
-		if got := headerValue(rules[i].fulfill.ResponseHeaders, "Content-Type"); got != want {
+		if got := headerEntry(rules[i].fulfill.ResponseHeaders, "Content-Type"); got != want {
 			t.Errorf("rule %d: got Content-Type %q, want %q", i+1, got, want)
 		}
 		n := 0
@@ -363,11 +363,11 @@ func TestStubPreflightPayload(t *testing.T) {
 		"Access-Control-Allow-Methods": "POST",
 		"Access-Control-Allow-Headers": "x-spike,content-type",
 	} {
-		if got := headerValue(p.ResponseHeaders, name); got != want {
+		if got := headerEntry(p.ResponseHeaders, name); got != want {
 			t.Errorf("%s: got %q, want %q", name, got, want)
 		}
 	}
-	if got := headerValue(p.ResponseHeaders, "Access-Control-Allow-Credentials"); got != "true" {
+	if got := headerEntry(p.ResponseHeaders, "Access-Control-Allow-Credentials"); got != "true" {
 		t.Errorf("Access-Control-Allow-Credentials: got %q, want true", got)
 	}
 
@@ -375,7 +375,7 @@ func TestStubPreflightPayload(t *testing.T) {
 	// for no headers gets no Allow-Headers at all rather than an empty one.
 	p = stubPreflightPayload(pauseEvent("OPTIONS", "https://h/api",
 		map[string]string{"Access-Control-Request-Method": "POST"}))
-	if got := headerValue(p.ResponseHeaders, "Access-Control-Allow-Origin"); got != "*" {
+	if got := headerEntry(p.ResponseHeaders, "Access-Control-Allow-Origin"); got != "*" {
 		t.Errorf("originless preflight ACAO: got %q, want *", got)
 	}
 	for _, h := range p.ResponseHeaders {
@@ -444,16 +444,6 @@ func TestStubOpenPages(t *testing.T) {
 	}
 }
 
-// headerValue reads one header from a fulfill payload's entries.
-func headerValue(headers []*proto.FetchHeaderEntry, name string) string {
-	for _, h := range headers {
-		if strings.EqualFold(h.Name, name) {
-			return h.Value
-		}
-	}
-	return ""
-}
-
 // --- end to end against a real browser ---
 
 // host_permissions is what the *service worker's* fetch needs: without it that
@@ -493,6 +483,22 @@ func (l *lockedBuffer) String() string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.b.String()
+}
+
+// pollUntil calls cond every 100ms and reports whether it became true before
+// the timeout. Interception starts and stops asynchronously, so what the page
+// sees only settles a beat after the stub does.
+func pollUntil(timeout time.Duration, cond func() bool) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		if cond() {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 func TestStub_EndToEnd(t *testing.T) {
@@ -569,15 +575,10 @@ func TestStub_EndToEnd(t *testing.T) {
 	// The poll works because this page is created after the concurrent enable:
 	// interception only covers documents committed after it, so a page that
 	// won that race would never be answered at all, not merely answered late.
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		if fetch(fetchText, srvA.URL+"/api/user") == `{"stub":true}` {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the stub never started answering")
-		}
-		time.Sleep(100 * time.Millisecond)
+	if !pollUntil(10*time.Second, func() bool {
+		return fetch(fetchText, srvA.URL+"/api/user") == `{"stub":true}`
+	}) {
+		t.Fatal("the stub never started answering")
 	}
 
 	if got := fetch(fetchText, srvA.URL+"/telemetry/x"); got != "ERR:Failed to fetch" {
@@ -607,16 +608,12 @@ func TestStub_EndToEnd(t *testing.T) {
 	if err := page.Timeout(15 * time.Second).WaitLoad(); err != nil {
 		t.Fatalf("reload for the content script: %v", err)
 	}
-	deadline = time.Now().Add(10 * time.Second)
-	for {
-		title := fetch(`() => document.title`)
-		if title == `cs:{"stub":true}` {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("content script fetch: title %q, want cs:{\"stub\":true}; decisions:\n%s", title, out.String())
-		}
-		time.Sleep(100 * time.Millisecond)
+	var title string
+	if !pollUntil(10*time.Second, func() bool {
+		title = fetch(`() => document.title`)
+		return title == `cs:{"stub":true}`
+	}) {
+		t.Fatalf("content script fetch: title %q, want cs:{\"stub\":true}; decisions:\n%s", title, out.String())
 	}
 
 	// The same interception covers the extension's service worker.
@@ -648,15 +645,10 @@ func TestStub_EndToEnd(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatalf("runStub: %v", err)
 	}
-	deadline = time.Now().Add(10 * time.Second)
-	for {
-		if fetch(fetchText, srvA.URL+"/api/user") == `{"real":true}` {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("requests still stubbed after stop")
-		}
-		time.Sleep(100 * time.Millisecond)
+	if !pollUntil(10*time.Second, func() bool {
+		return fetch(fetchText, srvA.URL+"/api/user") == `{"real":true}`
+	}) {
+		t.Fatal("requests still stubbed after stop")
 	}
 
 	for _, want := range []string{
