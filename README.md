@@ -303,6 +303,88 @@ Notes:
   on its own — the tab was closed, or the browser went away — reports the
   reason on stderr and exits 2.
 
+### Stubbing network requests
+
+`roddy stub` intercepts requests from pages, content scripts, and extension
+service workers, and answers them from a rules file, so tests run against
+canned responses instead of live servers (a web app's own service worker is
+out of scope — its traffic stays live, and the stub says so at startup):
+
+```bash
+roddy stub rules.json           # holds the session until Ctrl+C
+# stub: 4 rules active (Ctrl+C to stop)
+# GET https://api.example.com/user → fulfill 200 (rule 1)
+# POST https://t.example.com/beacon → abort internetdisconnected (rule 2)
+```
+
+**Start the stub before opening the pages it should cover.** Interception
+applies to documents committed after it starts, so a tab that was already open
+keeps the live network — no rules, no log lines — until it is reloaded
+(`roddy reload`). The command says so on stderr when it finds open pages:
+
+```
+note: 2 open page(s) keep the live network until reloaded — start the stub first, or roddy reload
+```
+
+The rules file is a JSON array; the first matching rule wins, top to bottom,
+and requests no rule matches continue to the real network untouched:
+
+```json
+[
+  {"url": "**/api/user",      "fulfill": {"json": {"name": "test"}}},
+  {"url": "**/telemetry/**",  "abort": "internetdisconnected"},
+  {"url": "**/api/**", "method": "POST", "fulfill": {"status": 500, "body": "boom"}},
+  {"url": "**/big-fixture",   "fulfill": {"path": "fixture.json"}}
+]
+```
+
+The conventions are Playwright's, so patterns and verbs copy verbatim from
+Playwright tests: URL globs where `*` stays inside a path segment, `**`
+crosses segments, `{a,b}` alternates and `?` is a literal; verbs `fulfill`
+(`status` default 200, `headers`, `contentType`, and at most one of `body` /
+`json` / `path`, the last resolved relative to the rules file), `abort` (a
+Playwright error code such as `internetdisconnected` or `connectionrefused`,
+or `true` for `failed`), and `continue`. Everything is validated up front — a
+typo in a rule fails the command before the browser is touched.
+
+Details that make stubbed tests behave:
+
+- Extension service workers get their own interception, armed before each
+  worker runs its first instruction — a worker's own fetches bypass
+  browser-wide interception, and its request path is fixed the moment it
+  starts. Workers already running when the stub starts are therefore
+  restarted (their in-memory state resets; stored state is untouched), and
+  workers stay awake while the stub runs.
+
+- Globs match the URL exactly as Chrome reports it; Playwright's base-URL
+  normalization is not ported, so write a fully-qualified pattern the way the
+  request really appears (scheme, host, port included) or start it with `**`.
+- CORS preflights are answered with a synthesized 204 when the request they
+  announce would be fulfilled or aborted — the real server may not exist — and
+  passed through otherwise, so genuine CORS behavior stays testable. That
+  policy governs: a rule of your own matching `OPTIONS` is not consulted for a
+  real preflight (it still matches a plain `OPTIONS` request).
+- Cross-origin fulfills get `Access-Control-Allow-Origin` reflected
+  automatically unless the rule sets its own.
+- Redirect hops pass through without re-matching (only the first request in a
+  chain is stubbed), and interception bypasses the HTTP cache, so every
+  request actually reaches the rules.
+- `--verbose` (`-v`) logs the requests no rule matched as well. That is the way
+  to debug a rule that is not firing: the request is there, with the exact URL
+  and method your glob has to match.
+- Stopping the stub (Ctrl+C) releases interception. Run one stub at a time:
+  a second one does not warn, it chains behind the first in enable order, and
+  the older holder's fulfills and aborts are the ones that win.
+
+Run it in the background from a test script and stop it when done:
+
+```bash
+roddy stub rules.json & STUB=$!
+roddy open https://example.com
+roddy storage get lastSync         # the extension saw the stubbed API
+kill $STUB
+```
+
 ### Navigate
 
 ```bash
@@ -674,7 +756,9 @@ The tool uses the [rod](https://github.com/go-rod/rod) Go library which communic
 | `extensions` | | List extensions loaded into this session |
 | `sw` | `[list] [--ext ID] [--timeout DUR]` | List extension service workers, waiting up to `--timeout` for them (exit 1 if none are running) |
 | `sw eval` | `<expr> [--ext ID] [--timeout DUR]` | Evaluate JS inside an extension's service worker (the evaluation is bounded by `ROD_TIMEOUT`); flags may go either side of the expression |
+| `storage` | `get [KEY] \| set KEY VALUE \| rm KEY... \| clear` | Read and write `chrome.storage` from inside an extension's service worker; `--area local\|sync\|session\|managed` (default local), plus `--ext` and `--timeout` as for `sw eval`, and `--` before a KEY or VALUE starting with a dash |
 | `logs` | `[--follow\|-f] [--sw] [--ext ID] [--timeout DUR]` | Print console output (replayed + live) |
+| `stub` | `<rules-file> [--verbose\|-v]` | Answer the browser's network requests from a JSON rules file, held in the foreground until Ctrl+C (`--verbose` also logs the requests no rule matched) |
 | `open` | `<url>` | Navigate to URL |
 | `back` | | Go back in history |
 | `forward` | | Go forward in history |

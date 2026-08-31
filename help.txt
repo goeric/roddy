@@ -37,6 +37,22 @@ Browser lifecycle:
                                   for sw eval; put -- before a KEY or VALUE
                                   that starts with a dash
 
+Network stubbing:
+  roddy stub <rules-file>        Intercept the browser's network requests —
+                                  pages, content scripts and extension service
+                                  workers — and answer them from a JSON rules
+                                  file, in the foreground until Ctrl+C. Rules
+                                  follow Playwright conventions: match on
+                                  url (glob: *, **, {a,b}) and method; verbs
+                                  fulfill {status, headers, contentType,
+                                  body | json | path}, abort [CODE], continue.
+                                  First matching rule wins; unmatched requests
+                                  continue to the real network. --verbose | -v
+                                  also logs unmatched requests. Start the stub
+                                  before opening the pages it covers: a page
+                                  already open keeps the live network until it
+                                  is reloaded
+
 Navigation:
   roddy open <url>               Navigate to URL
   roddy back                     Go back in history

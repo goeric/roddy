@@ -90,6 +90,7 @@ roddy start                                       # in a WXT project: auto-loads
 roddy extensions                                  # list what's loaded, with IDs
 roddy sw eval '<js>'                              # run JS inside the background service worker
 roddy storage get/set/rm/clear                    # chrome.storage without writing JS
+roddy stub rules.json                             # answer network requests from canned rules
 roddy logs [--sw]                                 # console output, incl. messages from before
 ```
 
@@ -209,6 +210,50 @@ Gotchas worth knowing:
   `roddy pages` and switch with `roddy page <i>`.
 - Point `--extension` at the **built** output (e.g. a WXT/Plasmo `.output/chrome-mv3`
   or webpack `dist/` directory), not the extension's source directory.
+
+### Stubbing the network
+
+`roddy stub rules.json` intercepts requests from pages, content scripts, and
+extension service workers — not a web app's own service worker, whose traffic
+stays live (the stub notes it at startup) — and answers matching ones
+from a JSON rules file. Starting it restarts running extension workers (their
+request path is fixed at start, so interception must be armed first; stored
+state survives, in-memory state resets), and workers stay awake while the
+stub runs. It holds the session in the foreground until Ctrl+C, printing one
+line per matched decision; run it in the background from scripts:
+
+```bash
+roddy stub rules.json & STUB=$!
+roddy open https://example.com          # the page and the extension now see stubs
+roddy sw eval 'fetch("https://api.example.com/user").then(r => r.json())'
+kill $STUB                              # requests flow to the real network again
+```
+
+Start the stub **before** the pages it should cover: interception only applies
+to documents committed after it starts, so an already-open tab keeps the live
+network until `roddy reload` (the command warns on stderr when it finds open
+pages). Add `--verbose` to log the unmatched requests too — that is how to see
+why a rule is not firing.
+
+Rules use Playwright's conventions (globs where `**` crosses path segments and
+`*` does not; verbs fulfill/abort/continue with Playwright's field names), so
+a Playwright route translates mechanically:
+
+```json
+[
+  {"url": "**/api/user",     "fulfill": {"json": {"name": "test"}}},
+  {"url": "**/telemetry/**", "abort": "internetdisconnected"},
+  {"url": "**/fixture",      "fulfill": {"path": "big.json", "status": 200}}
+]
+```
+
+First match wins, top to bottom; unmatched requests continue to the real
+network. Preflights for stubbed endpoints are answered automatically, and
+cross-origin fulfills get CORS headers reflected — stub a cross-origin API
+and the page can read it without server cooperation. The whole file is
+validated before the browser is touched. One stub at a time. Rare gotcha: an
+`sw eval 'fetch(...)'` fired while the extension's own stubbed traffic is
+mid-flight can time out (a Chromium race) — just retry the eval.
 
 ## Reading console output
 

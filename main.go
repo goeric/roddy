@@ -370,6 +370,8 @@ func main() {
 		cmdSW(args)
 	case "storage":
 		cmdStorage(args)
+	case "stub":
+		cmdStub(args)
 	case "logs":
 		cmdLogs(args)
 	case "help", "-h", "--help":

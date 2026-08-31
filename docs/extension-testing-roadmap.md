@@ -70,7 +70,33 @@ unilaterally. Whatever lands must also consider `--local` (a WXT project wants
 a project-local session) and stale builds (warn when `.output/chrome-mv3` is
 older than the newest file under `src/`? possibly out of scope).
 
-## 3. Network stubbing (large — architectural, brainstorm first)
+## 3. Network stubbing (large — architectural, brainstorm first) — v1 SHIPPED
+
+Landed 2026-08 after a design round with the maintainer and a Playwright
+source-mining pass. Architecture A (foreground `roddy stub rules.json`, the
+`logs --follow` resident pattern), file-only rules, Playwright-compatible
+conventions: their glob dialect (ported from urlMatch.ts), their verb and
+field names (fulfill/abort/continue; status/headers/contentType/body/json/
+path), their abort codes. First match wins top-down; unmatched requests
+continue. One browser-level `Fetch.enable` covers pages and content scripts;
+a worker's fetches obey only the interception state present when the worker
+STARTED (eval-triggered fetches pass under the browser-level enable alone,
+which is what the first spike over-generalized from), so the stub uses
+Playwright's model — auto-attach with wait-for-debugger, enable Fetch on the
+worker's session, resume — and restarts workers that were already running.
+Workers stay awake while the stub runs. Preflights for
+stubbed endpoints get a synthesized 204, others pass through; cross-origin
+fulfills reflect CORS headers; redirect hops pass through unmatched. Deferred
+deliberately: `times`, `fallback` chaining, response mutation (route.fetch
+style), HAR replay, websockets, inline CLI rules, live rules reload; also
+pre-open pages, which interception cannot reach until they re-navigate — v1
+only warns, and a `--reload` option that navigates them for you is the obvious
+follow-up — and multi-stub coordination (a holder registry in state.json, so a
+second stub refuses or takes over rather than silently chaining). New hard-won
+facts from this work (nil fulfill Body, browser-level EachEvent being
+unfiltered — the session-ID parameter is for answer routing, not delivery —
+and the SW first-attach interception race) are in CLAUDE.md. The original
+design notes follow.
 
 The remaining gap against Playwright: intercepting/stubbing the requests an
 extension or page makes (`Fetch.enable` + `Fetch.requestPaused` →
