@@ -140,7 +140,9 @@ type stubRuleJSON struct {
 }
 
 type stubFulfillJSON struct {
-	Status      int               `json:"status"`
+	// A pointer distinguishes an absent status (200) from an explicit 0, which
+	// is not a status at all and must fail validation.
+	Status      *int              `json:"status"`
 	Headers     map[string]string `json:"headers"`
 	ContentType string            `json:"contentType"`
 	Body        *string           `json:"body"`
@@ -162,6 +164,11 @@ func loadStubRules(path string) ([]stubRule, error) {
 	var raw []stubRuleJSON
 	if err := dec.Decode(&raw); err != nil {
 		return nil, fmt.Errorf("invalid rules file %s: %v", path, err)
+	}
+	// Decode stops at the end of the first value, so a second array (or any
+	// other trailing text) would otherwise load as nothing but the first.
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, fmt.Errorf("invalid rules file %s: trailing content after the rules array", path)
 	}
 	if len(raw) == 0 {
 		return nil, fmt.Errorf("rules file %s has no rules", path)
@@ -233,21 +240,33 @@ func compileStubRule(r stubRuleJSON, fixtureDir string) (stubRule, error) {
 
 func compileStubFulfill(f *stubFulfillJSON, fixtureDir string) (*proto.FetchFulfillRequest, error) {
 	p := &proto.FetchFulfillRequest{ResponseCode: 200}
-	if f.Status != 0 {
-		if f.Status < 100 || f.Status > 599 {
-			return nil, fmt.Errorf("invalid fulfill status %d", f.Status)
+	if f.Status != nil {
+		if *f.Status < 100 || *f.Status > 599 {
+			return nil, fmt.Errorf("invalid fulfill status %d", *f.Status)
 		}
-		p.ResponseCode = f.Status
+		p.ResponseCode = *f.Status
 	}
 
 	sources := 0
 	contentType := f.ContentType
 	if f.Body != nil {
 		sources++
-		p.Body = []byte(*f.Body)
 	}
 	if f.JSON != nil {
 		sources++
+	}
+	if f.Path != "" {
+		sources++
+	}
+	// Counted before any of them is read, so a rule naming two sources reports
+	// the conflict rather than whichever one happens to fail first.
+	if sources > 1 {
+		return nil, fmt.Errorf(`fulfill takes at most one of "body", "json", "path"`)
+	}
+	switch {
+	case f.Body != nil:
+		p.Body = []byte(*f.Body)
+	case f.JSON != nil:
 		var compact bytes.Buffer
 		if err := json.Compact(&compact, f.JSON); err != nil {
 			return nil, fmt.Errorf(`invalid fulfill "json": %v`, err)
@@ -256,19 +275,18 @@ func compileStubFulfill(f *stubFulfillJSON, fixtureDir string) (*proto.FetchFulf
 		if contentType == "" {
 			contentType = "application/json"
 		}
-	}
-	if f.Path != "" {
-		sources++
-		// Fixtures resolve relative to the rules file and load up front, so the
-		// holder does no disk I/O with a request paused on it.
-		body, err := os.ReadFile(filepath.Join(fixtureDir, f.Path))
+	case f.Path != "":
+		// A relative fixture resolves against the rules file; all of them load
+		// up front, so the holder does no disk I/O with a request paused on it.
+		fixture := f.Path
+		if !filepath.IsAbs(fixture) {
+			fixture = filepath.Join(fixtureDir, fixture)
+		}
+		body, err := os.ReadFile(fixture)
 		if err != nil {
 			return nil, fmt.Errorf("cannot read fulfill path: %v", err)
 		}
 		p.Body = body
-	}
-	if sources > 1 {
-		return nil, fmt.Errorf(`fulfill takes at most one of "body", "json", "path"`)
 	}
 	// rod marshals a nil Body as JSON null, which Chrome rejects with "binary
 	// value expected" — an empty body must still be a (zero-length) binary.
@@ -276,13 +294,49 @@ func compileStubFulfill(f *stubFulfillJSON, fixtureDir string) (*proto.FetchFulf
 		p.Body = []byte{}
 	}
 
+	// Chrome rejects a malformed header per request ("Invalid header") and the
+	// request then falls through to the LIVE network, so these fail at load
+	// like everything else rather than at the first request that matches.
 	for _, name := range sortedKeys(f.Headers) {
-		p.ResponseHeaders = append(p.ResponseHeaders, &proto.FetchHeaderEntry{Name: name, Value: f.Headers[name]})
+		value := f.Headers[name]
+		if !validHeaderName(name) {
+			return nil, fmt.Errorf("invalid fulfill header name %q", name)
+		}
+		if !validHeaderValue(value) {
+			return nil, fmt.Errorf("invalid fulfill header value for %q: control characters are not allowed", name)
+		}
+		p.ResponseHeaders = append(p.ResponseHeaders, &proto.FetchHeaderEntry{Name: name, Value: value})
 	}
 	if contentType != "" && headerEntry(p.ResponseHeaders, "Content-Type") == "" {
+		if !validHeaderValue(contentType) {
+			return nil, fmt.Errorf(`invalid fulfill "contentType" %q: control characters are not allowed`, contentType)
+		}
 		p.ResponseHeaders = append(p.ResponseHeaders, &proto.FetchHeaderEntry{Name: "Content-Type", Value: contentType})
 	}
 	return p, nil
+}
+
+// validHeaderName reports whether s is an RFC 7230 token: no controls, no
+// space, none of the separators.
+func validHeaderName(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c <= ' ' || c >= 0x7f || strings.IndexByte(`"(),/:;<=>?@[\]{}`, c) >= 0 {
+			return false
+		}
+	}
+	return s != ""
+}
+
+// validHeaderValue rejects the control characters a header value may not
+// carry, CR and LF among them.
+func validHeaderValue(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; (c < ' ' && c != '\t') || c == 0x7f {
+			return false
+		}
+	}
+	return true
 }
 
 func sortedKeys[V any](m map[string]V) []string {
@@ -349,7 +403,10 @@ func stubDecide(rules []stubRule, e *proto.FetchRequestPaused) stubDecision {
 	if e.RedirectedRequestID != "" {
 		return stubDecision{stubContinueHop, -1}
 	}
-	if e.Request.Method == "OPTIONS" {
+	// fetch() normalizes only the six common verbs, so an unusual one arrives
+	// exactly as the caller typed it ("patch"); rule methods are uppercased.
+	method := strings.ToUpper(e.Request.Method)
+	if method == "OPTIONS" {
 		if acrm := requestHeader(e.Request.Headers, "Access-Control-Request-Method"); acrm != "" {
 			if i := matchStubRule(rules, strings.ToUpper(acrm), e.Request.URL); i >= 0 && (rules[i].fulfill != nil || rules[i].abort != "") {
 				return stubDecision{stubPreflight, i}
@@ -357,7 +414,7 @@ func stubDecide(rules []stubRule, e *proto.FetchRequestPaused) stubDecision {
 			return stubDecision{stubContinue, -1}
 		}
 	}
-	i := matchStubRule(rules, e.Request.Method, e.Request.URL)
+	i := matchStubRule(rules, method, e.Request.URL)
 	switch {
 	case i < 0:
 		return stubDecision{stubContinue, -1}
@@ -371,9 +428,13 @@ func stubDecide(rules []stubRule, e *proto.FetchRequestPaused) stubDecision {
 }
 
 // stubFulfillPayload instantiates a rule's fulfill template for one request.
-// A cross-origin request gets Access-Control-Allow-Origin reflected (as
-// Playwright does) so the stubbed response is readable by the page, unless
-// the rule set its own.
+// A request bearing an Origin header gets Access-Control-Allow-Origin
+// reflected (as Playwright does, which additionally checks the origins differ
+// — reflecting regardless is harmless) so the stubbed response is readable by
+// the page, unless the rule set its own.
+//
+// The template is never mutated: this copies the struct and the header slice,
+// and the entries and Body it then shares stay read-only for their lifetime.
 func stubFulfillPayload(r stubRule, e *proto.FetchRequestPaused) *proto.FetchFulfillRequest {
 	p := *r.fulfill
 	p.RequestID = e.RequestID
@@ -412,9 +473,9 @@ func stubPreflightPayload(e *proto.FetchRequestPaused) *proto.FetchFulfillReques
 // interception itself bypasses the HTTP cache.
 //
 // The subscription is registered before the enable (the logs.go lesson), and
-// every answer runs in its own goroutine: rod delivers events synchronously
-// inside wait, so answering inline would deadlock the CDP reader against the
-// answer's own round-trip.
+// every answer runs in its own goroutine: rod runs the callbacks synchronously
+// inside wait, so answering inline would serialize every pause behind the
+// previous answer's round-trip.
 func runStub(ctx context.Context, browser *rod.Browser, rules []stubRule, out io.Writer, verbose bool) error {
 	var mu sync.Mutex
 	logf := func(format string, args ...interface{}) {
@@ -423,15 +484,18 @@ func runStub(ctx context.Context, browser *rod.Browser, rules []stubRule, out io
 		fmt.Fprintf(out, format+"\n", args...)
 	}
 
-	// The callback takes the session ID: without that parameter rod delivers
-	// only the browser session's events, and a pause Chrome tags with another
-	// session's ID — seen when a flat session is attached to a service worker,
-	// as every sw/storage command does — would be dropped and hang its request.
-	// The answer goes back on the session the pause arrived on.
+	// A browser-level EachEvent delivers every session's events (rod's filter is
+	// `sessionID == "" || msg.SessionID == sessionID`, and Browser.EachEvent
+	// passes ""), so the sid parameter is not what makes them arrive: it says
+	// which session to answer on. Every pause observed on this Chromium carries
+	// sid "" — even with flat sessions attached to service workers, as every
+	// sw/storage command does — so the routing is defensive.
 	wait := browser.Context(ctx).EachEvent(func(e *proto.FetchRequestPaused, sid proto.TargetSessionID) {
-		var client proto.Client = browser
+		// Answers go out on a deadlined client: a wedged browser must fail the
+		// answer rather than park its goroutine forever.
+		var client proto.Client = browser.Timeout(defaultTimeout)
 		if sid != "" {
-			client = browser.PageFromSession(sid)
+			client = browser.Timeout(defaultTimeout).PageFromSession(sid)
 		}
 		go answerPause(client, rules, e, logf, verbose)
 	})
@@ -444,17 +508,20 @@ func runStub(ctx context.Context, browser *rod.Browser, rules []stubRule, out io
 
 	wait()
 	if ctx.Err() != nil {
-		// A deliberate stop: release interception so later requests flow again
-		// even though this CDP connection is about to close anyway.
-		_ = proto.FetchDisable{}.Call(browser)
+		// Reached only when the caller cancels (the tests do; Ctrl+C kills the
+		// process instead, and Chrome's own disconnect cleanup then releases
+		// interception and auto-continues the in-flight pauses). Release it
+		// explicitly so a canceled-but-still-connected browser flows again.
+		_ = proto.FetchDisable{}.Call(browser.Timeout(defaultTimeout))
 		return nil
 	}
 	return fmt.Errorf("browser connection lost")
 }
 
-// answerPause resolves one paused request. Every pause must be answered or
-// the request hangs forever; answer errors are expected when a request is
-// canceled or the page closes mid-flight, so they only print under --verbose.
+// answerPause resolves one paused request. Every pause must be answered or the
+// request hangs forever, so a failed answer is logged unconditionally — with
+// what the fallback continue then did, since a request nobody answered is
+// otherwise invisible.
 func answerPause(client proto.Client, rules []stubRule, e *proto.FetchRequestPaused, logf func(string, ...interface{}), verbose bool) {
 	d := stubDecide(rules, e)
 	var err error
@@ -484,34 +551,76 @@ func answerPause(client proto.Client, rules []stubRule, e *proto.FetchRequestPau
 	}
 	if err != nil {
 		// A failed answer leaves the request paused forever unless something
-		// else releases it, so fall back to continuing it; if the request is
-		// already gone (canceled, page closed) the fallback fails quietly too.
-		logf("%s %s → answer failed: %v", e.Request.Method, e.Request.URL, err)
-		_ = proto.FetchContinueRequest{RequestID: e.RequestID}.Call(client)
+		// else releases it, so fall back to continuing it. The fallback failing
+		// too means the request is already gone (canceled, page closed).
+		if ferr := (proto.FetchContinueRequest{RequestID: e.RequestID}).Call(client); ferr != nil {
+			logf("%s %s → answer failed: %v; request already gone (%v)", e.Request.Method, e.Request.URL, err, ferr)
+		} else {
+			logf("%s %s → answer failed: %v; released to the real network", e.Request.Method, e.Request.URL, err)
+		}
 	}
+}
+
+// parseStubArgs pulls --verbose out of args wherever it appears, the way
+// parseStorageFlags does, and returns the single positional rules file. "--"
+// ends the flags for a file name that really does start with a dash.
+func parseStubArgs(args []string) (path string, verbose bool, err error) {
+	var rest []string
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--" {
+			rest = append(rest, args[i+1:]...)
+			break
+		}
+		name, _, inline := strings.Cut(args[i], "=")
+		switch name {
+		case "--verbose", "-verbose", "-v":
+			if inline {
+				return "", false, fmt.Errorf("flag %s does not take a value", name)
+			}
+			verbose = true
+		default:
+			if storageFlagLike(name) {
+				return "", false, fmt.Errorf(`unknown flag: %s (use "--" before a file name that starts with a dash)`, name)
+			}
+			rest = append(rest, args[i])
+		}
+	}
+	switch {
+	case len(rest) == 0:
+		return "", false, fmt.Errorf("missing rules file")
+	case len(rest) > 1:
+		return "", false, fmt.Errorf("stub takes exactly one rules file")
+	}
+	return rest[0], verbose, nil
+}
+
+// stubOpenPages counts the pages the stub is about to miss: interception
+// applies per committed document, so a page open before it starts keeps the
+// live network until it is reloaded. about:blank and Chrome's own pages carry
+// no traffic worth warning about.
+func stubOpenPages(targets []*proto.TargetTargetInfo) int {
+	n := 0
+	for _, t := range targets {
+		if t.Type != proto.TargetTargetInfoTypePage || t.URL == "about:blank" {
+			continue
+		}
+		if strings.HasPrefix(t.URL, "chrome://") || strings.HasPrefix(t.URL, "chrome-extension://") {
+			continue
+		}
+		n++
+	}
+	return n
 }
 
 // cmdStub handles "roddy stub <rules-file>": browser-wide request stubbing
 // held in the foreground, logs --follow style, until interrupted.
 func cmdStub(args []string) {
-	verbose := false
-	var rest []string
-	for _, a := range args {
-		switch a {
-		case "--verbose", "-v":
-			verbose = true
-		default:
-			if storageFlagLike(a) {
-				fatal("unknown flag: %s\n%s", a, stubUsage)
-			}
-			rest = append(rest, a)
-		}
-	}
-	if len(rest) != 1 {
-		fatal("%s", stubUsage)
+	path, verbose, err := parseStubArgs(args)
+	if err != nil {
+		fatal("%v\n%s", err, stubUsage)
 	}
 
-	rules, err := loadStubRules(rest[0])
+	rules, err := loadStubRules(path)
 	if err != nil {
 		fatal("%v", err)
 	}
@@ -522,6 +631,15 @@ func cmdStub(args []string) {
 	browser, err := connectBrowser(s)
 	if err != nil {
 		fatal("%v", err)
+	}
+
+	// Interception applies per committed document, so pages that are already
+	// open are not covered until they navigate again. Warning beats reloading
+	// them behind the user's back.
+	if list, lerr := (proto.TargetGetTargets{}).Call(browser.Timeout(defaultTimeout)); lerr != nil {
+		fmt.Fprintf(os.Stderr, "note: cannot check for open pages: %v\n", lerr)
+	} else if n := stubOpenPages(list.TargetInfos); n > 0 {
+		fmt.Fprintf(os.Stderr, "note: %d open page(s) keep the live network until reloaded — start the stub first, or roddy reload\n", n)
 	}
 
 	fmt.Printf("stub: %d rules active (Ctrl+C to stop)\n", len(rules))

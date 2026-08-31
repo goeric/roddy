@@ -83,10 +83,15 @@ MV3 extension SWs (verified — no per-target machinery needed). Preflights for
 stubbed endpoints get a synthesized 204, others pass through; cross-origin
 fulfills reflect CORS headers; redirect hops pass through unmatched. Deferred
 deliberately: `times`, `fallback` chaining, response mutation (route.fetch
-style), HAR replay, websockets, inline CLI rules, live rules reload. New
-hard-won facts from this work (nil fulfill Body, rod EachEvent session
-filtering, the SW first-attach interception race) are in CLAUDE.md. The
-original design notes follow.
+style), HAR replay, websockets, inline CLI rules, live rules reload; also
+pre-open pages, which interception cannot reach until they re-navigate — v1
+only warns, and a `--reload` option that navigates them for you is the obvious
+follow-up — and multi-stub coordination (a holder registry in state.json, so a
+second stub refuses or takes over rather than silently chaining). New hard-won
+facts from this work (nil fulfill Body, browser-level EachEvent being
+unfiltered — the session-ID parameter is for answer routing, not delivery —
+and the SW first-attach interception race) are in CLAUDE.md. The original
+design notes follow.
 
 The remaining gap against Playwright: intercepting/stubbing the requests an
 extension or page makes (`Fetch.enable` + `Fetch.requestPaused` →

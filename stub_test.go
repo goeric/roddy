@@ -56,6 +56,14 @@ func TestGlobToRegexPattern(t *testing.T) {
 		{`https://x.com/a\*b`, "https://x.com/aXb", false},
 		// comma outside a group is a literal
 		{"https://x.com/a,b", "https://x.com/a,b", true},
+		// a trailing backslash escapes nothing and stands for itself
+		{`https://x.com/a\`, `https://x.com/a\`, true},
+		// regexp metacharacters in the glob are literals
+		{"**/q=a+b", "https://h/q=a+b", true},
+		{"**/q=a+b", "https://h/q=aab", false},
+		// matching is case-sensitive, as Playwright's is
+		{"**/API/**", "https://h.io/api/x", false},
+		{"**/API/**", "https://h.io/API/x", true},
 		// full-match anchoring
 		{"https://x.com/a", "https://x.com/a/b", false},
 	}
@@ -138,6 +146,30 @@ func TestLoadStubRules(t *testing.T) {
 		t.Errorf("rule 5: abort true should mean failed: %q", rules[4].abort)
 	}
 
+	// A bodyless fulfill still carries a zero-length body: rod marshals a nil
+	// Body as JSON null and Chrome rejects that with "binary value expected".
+	bodyless, err := loadStubRules(writeRules(t, `[{"url": "**", "fulfill": {"status": 204}}]`))
+	if err != nil {
+		t.Fatalf("bodyless fulfill: %v", err)
+	}
+	if b := bodyless[0].fulfill.Body; b == nil || len(b) != 0 {
+		t.Errorf("bodyless fulfill: got body %#v, want a non-nil empty slice", b)
+	}
+	if bodyless[0].fulfill.ResponseCode != 204 {
+		t.Errorf("bodyless fulfill: got status %d, want 204", bodyless[0].fulfill.ResponseCode)
+	}
+
+	// An absolute fixture path is used as written — the rules file here lives
+	// in a different directory, so joining would not find it.
+	absRules, err := loadStubRules(writeRules(t,
+		fmt.Sprintf(`[{"url": "**", "fulfill": {"path": %q}}]`, filepath.Join(dir, "user.json"))))
+	if err != nil {
+		t.Fatalf("absolute fixture path: %v", err)
+	}
+	if string(absRules[0].fulfill.Body) != `{"fixture":true}` {
+		t.Errorf("absolute fixture path: got body %q", absRules[0].fulfill.Body)
+	}
+
 	bad := map[string]string{
 		"not an array":     `{"url": "a"}`,
 		"no verb":          `[{"url": "**"}]`,
@@ -150,10 +182,37 @@ func TestLoadStubRules(t *testing.T) {
 		"missing fixture":  `[{"url": "**", "fulfill": {"path": "nope.json"}}]`,
 		"empty file":       `[]`,
 		"continue false":   `[{"url": "**", "continue": false}]`,
+		// A status is validated when it is written, so an explicit 0 — which
+		// absent would have meant 200 — is a mistake rather than a default.
+		"explicit zero status": `[{"url": "**", "fulfill": {"status": 0}}]`,
+		"status below 100":     `[{"url": "**", "fulfill": {"status": 99}}]`,
+		"status above 599":     `[{"url": "**", "fulfill": {"status": 600}}]`,
+		// Chrome would reject these per request with "Invalid header" and the
+		// request would fall through to the real network: they fail at load.
+		"header name with a space": `[{"url": "**", "fulfill": {"headers": {"X Bad": "1"}}}]`,
+		"header value newline":     `[{"url": "**", "fulfill": {"headers": {"X-Bad": "a\nb"}}}]`,
+		"contentType newline":      `[{"url": "**", "fulfill": {"contentType": "text/plain\nX-Bad: 1"}}]`,
+		// Two concatenated arrays would otherwise load as only the first.
+		"trailing json": `[{"url": "**/a", "abort": true}][{"url": "**/b", "abort": true}]`,
 	}
 	for name, body := range bad {
 		if _, err := loadStubRules(writeRules(t, body)); err == nil {
 			t.Errorf("%s: expected an error", name)
+		}
+	}
+
+	// The message has to name the real problem, including which rule has it.
+	for _, c := range []struct{ name, body, want string }{
+		{"nested brace", `[{"url": "**", "abort": true}, {"url": "{a,{b,c}}", "abort": true}]`, `rule 2: invalid glob pattern "{a,{b,c}}": nested '{'`},
+		{"two verbs", `[{"url": "**", "abort": true, "continue": true}]`, `need exactly one of "fulfill", "abort", "continue"`},
+		{"bad status", `[{"url": "**", "fulfill": {"status": 600}}]`, "invalid fulfill status 600"},
+		// The conflict is reported before the fixture is opened, so a rule with
+		// both does not complain about the file it never should have read.
+		{"body and path", `[{"url": "**", "fulfill": {"body": "x", "path": "nope.json"}}]`, `fulfill takes at most one of "body", "json", "path"`},
+	} {
+		_, err := loadStubRules(writeRules(t, c.body))
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: got %v, want an error containing %q", c.name, err, c.want)
 		}
 	}
 }
@@ -176,7 +235,8 @@ func TestStubDecide(t *testing.T) {
 		{"url": "**/api/user", "method": "POST", "fulfill": {"json": 1}},
 		{"url": "**/api/**", "fulfill": {"body": "generic"}},
 		{"url": "**/telemetry/**", "abort": true},
-		{"url": "**/passthrough", "continue": true}
+		{"url": "**/passthrough", "continue": true},
+		{"url": "**/patchy", "method": "PATCH", "fulfill": {"body": "p"}}
 	]`))
 	if err != nil {
 		t.Fatal(err)
@@ -201,7 +261,14 @@ func TestStubDecide(t *testing.T) {
 			map[string]string{"Access-Control-Request-Method": "GET"}), stubContinue, -1},
 		{"preflight for continue rule", pauseEvent("OPTIONS", "https://h/passthrough",
 			map[string]string{"Access-Control-Request-Method": "GET"}), stubContinue, -1},
+		{"preflight for an aborted request", pauseEvent("OPTIONS", "https://h/telemetry/x",
+			map[string]string{"Access-Control-Request-Method": "POST"}), stubPreflight, 2},
 		{"plain OPTIONS is not a preflight", pauseEvent("OPTIONS", "https://h/api/other", nil), stubFulfill, 1},
+		// fetch() normalizes only the six common verbs, so "patch" reaches CDP
+		// verbatim and still has to match the rule's uppercase method.
+		{"lowercase method", pauseEvent("patch", "https://h/patchy", nil), stubFulfill, 4},
+		{"lowercase preflight method", pauseEvent("OPTIONS", "https://h/patchy",
+			map[string]string{"Access-Control-Request-Method": "patch"}), stubPreflight, 4},
 	}
 	for _, c := range cases {
 		d := stubDecide(rules, c.e)
@@ -223,11 +290,17 @@ func TestStubFulfillCORS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A cross-origin request gets ACAO reflected so the stubbed response is
-	// readable; a same-origin one (no Origin header) gets no CORS headers.
+	// A request carrying an Origin gets it reflected so the stubbed response is
+	// readable; a GET without an Origin header gets no CORS headers.
 	p := stubFulfillPayload(rules[0], pauseEvent("GET", "https://h/x", map[string]string{"Origin": "https://o"}))
-	if got := headerValue(p.ResponseHeaders, "Access-Control-Allow-Origin"); got != "https://o" {
-		t.Errorf("ACAO not reflected: %q", got)
+	for name, want := range map[string]string{
+		"Access-Control-Allow-Origin":      "https://o",
+		"Access-Control-Allow-Credentials": "true",
+		"Vary":                             "Origin",
+	} {
+		if got := headerValue(p.ResponseHeaders, name); got != want {
+			t.Errorf("%s: got %q, want %q", name, got, want)
+		}
 	}
 	p = stubFulfillPayload(rules[0], pauseEvent("GET", "https://h/x", nil))
 	if got := headerValue(p.ResponseHeaders, "Access-Control-Allow-Origin"); got != "" {
@@ -242,6 +315,36 @@ func TestStubFulfillCORS(t *testing.T) {
 	p = stubFulfillPayload(rules[0], pauseEvent("GET", "https://h/x", map[string]string{"Origin": "https://o"}))
 	if got := headerValue(p.ResponseHeaders, "Access-Control-Allow-Origin"); got != "*" {
 		t.Errorf("rule's own ACAO overridden: %q", got)
+	}
+	// Reflecting into the copy must not accumulate onto the shared template.
+	if n := len(rules[0].fulfill.ResponseHeaders); n != 1 {
+		t.Errorf("fulfill template mutated: %d headers, want 1", n)
+	}
+}
+
+// Content-Type has three sources; the more explicit one wins.
+func TestStubFulfillContentType(t *testing.T) {
+	rules, err := loadStubRules(writeRules(t, `[
+		{"url": "**/a", "fulfill": {"json": 1, "headers": {"content-type": "text/explicit"}}},
+		{"url": "**/b", "fulfill": {"json": 1, "contentType": "text/from-field"}},
+		{"url": "**/c", "fulfill": {"body": "x", "contentType": "text/from-field", "headers": {"Content-Type": "text/explicit"}}}
+	]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range []string{"text/explicit", "text/from-field", "text/explicit"} {
+		if got := headerValue(rules[i].fulfill.ResponseHeaders, "Content-Type"); got != want {
+			t.Errorf("rule %d: got Content-Type %q, want %q", i+1, got, want)
+		}
+		n := 0
+		for _, h := range rules[i].fulfill.ResponseHeaders {
+			if strings.EqualFold(h.Name, "Content-Type") {
+				n++
+			}
+		}
+		if n != 1 {
+			t.Errorf("rule %d: %d Content-Type headers, want 1", i+1, n)
+		}
 	}
 }
 
@@ -264,6 +367,81 @@ func TestStubPreflightPayload(t *testing.T) {
 			t.Errorf("%s: got %q, want %q", name, got, want)
 		}
 	}
+	if got := headerValue(p.ResponseHeaders, "Access-Control-Allow-Credentials"); got != "true" {
+		t.Errorf("Access-Control-Allow-Credentials: got %q, want true", got)
+	}
+
+	// Without an Origin to reflect the 204 allows any; a preflight that asks
+	// for no headers gets no Allow-Headers at all rather than an empty one.
+	p = stubPreflightPayload(pauseEvent("OPTIONS", "https://h/api",
+		map[string]string{"Access-Control-Request-Method": "POST"}))
+	if got := headerValue(p.ResponseHeaders, "Access-Control-Allow-Origin"); got != "*" {
+		t.Errorf("originless preflight ACAO: got %q, want *", got)
+	}
+	for _, h := range p.ResponseHeaders {
+		if strings.EqualFold(h.Name, "Access-Control-Allow-Headers") {
+			t.Errorf("unexpected Access-Control-Allow-Headers: %q", h.Value)
+		}
+	}
+}
+
+// --- arguments and the open-page warning (no browser) ---
+
+func TestParseStubArgs(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		args    []string
+		path    string
+		verbose bool
+	}{
+		{"just a file", []string{"rules.json"}, "rules.json", false},
+		{"flag first", []string{"--verbose", "rules.json"}, "rules.json", true},
+		{"flag last", []string{"rules.json", "-v"}, "rules.json", true},
+		{"single dash spelling", []string{"-verbose", "rules.json"}, "rules.json", true},
+		{"terminator", []string{"--", "-rules.json"}, "-rules.json", false},
+		{"terminator after a flag", []string{"-v", "--", "--weird.json"}, "--weird.json", true},
+	} {
+		path, verbose, err := parseStubArgs(c.args)
+		if err != nil || path != c.path || verbose != c.verbose {
+			t.Errorf("%s: got %q/%v/%v, want %q/%v/nil", c.name, path, verbose, err, c.path, c.verbose)
+		}
+	}
+
+	for _, c := range []struct {
+		name string
+		args []string
+	}{
+		{"no file", nil},
+		{"only a flag", []string{"-v"}},
+		{"two files", []string{"a.json", "b.json"}},
+		{"unknown flag", []string{"--quiet", "rules.json"}},
+		{"dash-leading file without --", []string{"-rules.json"}},
+		{"inline value on a bool flag", []string{"--verbose=false", "rules.json"}},
+	} {
+		if path, _, err := parseStubArgs(c.args); err == nil {
+			t.Errorf("%s: expected an error, got path %q", c.name, path)
+		}
+	}
+}
+
+func TestStubOpenPages(t *testing.T) {
+	targets := []*proto.TargetTargetInfo{
+		{Type: proto.TargetTargetInfoTypePage, URL: "https://example.com/"},
+		{Type: proto.TargetTargetInfoTypePage, URL: "http://127.0.0.1:8080/app"},
+		// None of these carries app traffic worth warning about.
+		{Type: proto.TargetTargetInfoTypePage, URL: "about:blank"},
+		{Type: proto.TargetTargetInfoTypePage, URL: "chrome://newtab/"},
+		{Type: proto.TargetTargetInfoTypePage, URL: "chrome-extension://abc/options.html"},
+		// Workers are covered by interception whenever they started.
+		{Type: proto.TargetTargetInfoTypeServiceWorker, URL: "chrome-extension://abc/sw.js"},
+		{Type: proto.TargetTargetInfoTypeBrowser, URL: ""},
+	}
+	if got := stubOpenPages(targets); got != 2 {
+		t.Errorf("got %d open pages, want 2", got)
+	}
+	if got := stubOpenPages(nil); got != 0 {
+		t.Errorf("got %d open pages for no targets, want 0", got)
+	}
 }
 
 // headerValue reads one header from a fulfill payload's entries.
@@ -278,15 +456,25 @@ func headerValue(headers []*proto.FetchHeaderEntry, name string) string {
 
 // --- end to end against a real browser ---
 
-// The SW needs host permissions or its cross-origin fetches are CORS-blocked
-// before interception can matter.
+// host_permissions is what the *service worker's* fetch needs: without it that
+// fetch carries an Origin of chrome-extension://<id>, the test server sends no
+// CORS headers and it fails "Failed to fetch" before interception can matter
+// (verified). The content script's fetch is same-origin with the page and needs
+// none — though content_scripts matches grant the same origins in any case.
 const stubSWManifest = `{
   "manifest_version": 3,
   "name": "Stub SW Extension",
   "version": "1.0.0",
   "background": {"service_worker": "sw.js"},
-  "host_permissions": ["<all_urls>"]
+  "host_permissions": ["<all_urls>"],
+  "content_scripts": [{"matches": ["<all_urls>"], "js": ["cs.js"]}]
 }`
+
+// The content script proves the docs' claim that content-script fetches are
+// intercepted too: it writes what it got into a place the test can read.
+const stubContentScript = `fetch("/api/user").then(r => r.text())
+  .then(t => { document.title = "cs:" + t; })
+  .catch(e => { document.title = "cs-ERR:" + e.message; });`
 
 // lockedBuffer lets the test read decision lines while answer goroutines may
 // still be writing them.
@@ -340,6 +528,7 @@ func TestStub_EndToEnd(t *testing.T) {
 	for name, body := range map[string]string{
 		"manifest.json": stubSWManifest,
 		"sw.js":         `console.log("stub sw up");`,
+		"cs.js":         stubContentScript,
 	} {
 		if err := os.WriteFile(filepath.Join(extDir, name), []byte(body), 0644); err != nil {
 			t.Fatal(err)
@@ -350,7 +539,8 @@ func TestStub_EndToEnd(t *testing.T) {
 	rules, err := loadStubRules(writeRules(t, `[
 		{"url": "**/api/user", "fulfill": {"json": {"stub": true}}},
 		{"url": "**/telemetry/**", "abort": "internetdisconnected"},
-		{"url": "**/cors", "fulfill": {"body": "STUB-B", "contentType": "text/plain"}}
+		{"url": "**/cors", "fulfill": {"body": "STUB-B", "contentType": "text/plain"}},
+		{"url": "**/final", "fulfill": {"body": "STUBBED-FINAL"}}
 	]`))
 	if err != nil {
 		t.Fatal(err)
@@ -376,7 +566,9 @@ func TestStub_EndToEnd(t *testing.T) {
 	}
 	fetchText := `url => fetch(url).then(r => r.text()).catch(e => "ERR:" + e.message)`
 
-	// The enable races the first request; poll until the stub answers.
+	// The poll works because this page is created after the concurrent enable:
+	// interception only covers documents committed after it, so a page that
+	// won that race would never be answered at all, not merely answered late.
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		if fetch(fetchText, srvA.URL+"/api/user") == `{"stub":true}` {
@@ -391,15 +583,40 @@ func TestStub_EndToEnd(t *testing.T) {
 	if got := fetch(fetchText, srvA.URL+"/telemetry/x"); got != "ERR:Failed to fetch" {
 		t.Errorf("abort: got %q, want ERR:Failed to fetch", got)
 	}
-	// Unmatched requests reach the real server, redirect hops included.
+	// Unmatched requests reach the real server, and a redirect hop is continued
+	// without consulting the rules: rule 4 does fulfill a direct /final, yet
+	// the hop the 302 produces still lands on the real one.
+	if got := fetch(fetchText, srvA.URL+"/final"); got != "STUBBED-FINAL" {
+		t.Errorf("direct /final: got %q, want STUBBED-FINAL", got)
+	}
 	if got := fetch(fetchText, srvA.URL+"/redir"); got != "FINAL" {
-		t.Errorf("redirect chain: got %q, want FINAL", got)
+		t.Errorf("redirect chain: got %q, want FINAL (the hop must bypass rule 4)", got)
 	}
 	// The preflight (custom header, cross-origin) and the request itself are
 	// both answered by the stub; the real server never sends CORS headers.
 	if got := fetch(`url => fetch(url, {headers: {"X-Stub-Test": "1"}}).then(r => r.text()).catch(e => "ERR:" + e.message)`,
 		srvB.URL+"/cors"); got != "STUB-B" {
 		t.Errorf("preflighted cross-origin fetch: got %q, want STUB-B; decisions:\n%s", got, out.String())
+	}
+
+	// And the extension's content script: reloading runs it with the stub
+	// already answering, and it writes what its fetch returned into the title.
+	if err := page.Timeout(15 * time.Second).Navigate(srvA.URL + "/page"); err != nil {
+		t.Fatalf("reload for the content script: %v", err)
+	}
+	if err := page.Timeout(15 * time.Second).WaitLoad(); err != nil {
+		t.Fatalf("reload for the content script: %v", err)
+	}
+	deadline = time.Now().Add(10 * time.Second)
+	for {
+		title := fetch(`() => document.title`)
+		if title == `cs:{"stub":true}` {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("content script fetch: title %q, want cs:{\"stub\":true}; decisions:\n%s", title, out.String())
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 
 	// The same interception covers the extension's service worker.

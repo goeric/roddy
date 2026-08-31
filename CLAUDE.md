@@ -64,13 +64,19 @@ Chrome (pinned Chromium 128 via rod's cache):
 - Browser-level `Fetch.enable` (`urlPattern "*"`, Request stage) intercepts
   pages, content scripts AND MV3 extension SW fetches on one session; the
   interception itself bypasses the HTTP cache; redirect hops re-pause carrying
-  `RedirectedRequestID` on the pause event (no Network domain needed).
+  `RedirectedRequestID` on the pause event (no Network domain needed). It
+  applies per COMMITTED DOCUMENT: a page whose document committed before the
+  enable keeps the live network forever — no pause events at all — until it is
+  re-navigated. SW fetches are covered whenever the worker started.
 - `FetchFulfillRequest.Body` has no omitempty: nil marshals as JSON null and
   Chrome rejects the fulfill with "binary value expected" — always send at
   least `[]byte{}`.
-- rod `EachEvent`: a callback WITHOUT the `proto.TargetSessionID` parameter
-  receives only the subscribing session's events; add the parameter to see
-  every session's (how logs.go and stub.go get flat-session events).
+- rod `EachEvent` never filters delivery by callback arity: `eachEvent` keeps a
+  message when `sessionID == "" || msg.SessionID == sessionID`, and
+  `Browser.EachEvent` passes "" — a browser-level subscription sees every
+  session's events either way. The optional `proto.TargetSessionID` parameter
+  only reports which session the event arrived on, which is what stub.go
+  answers a pause back on (every pause observed here carries "").
 - A fetch launched by the FIRST `Runtime.evaluate` in a freshly-attached SW
   flat session races browser-level interception and can wedge — the pause
   never surfaces on any session while page interception stays healthy

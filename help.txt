@@ -48,7 +48,10 @@ Network stubbing:
                                   body | json | path}, abort [CODE], continue.
                                   First matching rule wins; unmatched requests
                                   continue to the real network. --verbose | -v
-                                  also logs unmatched requests
+                                  also logs unmatched requests. Start the stub
+                                  before opening the pages it covers: a page
+                                  already open keeps the live network until it
+                                  is reloaded
 
 Navigation:
   roddy open <url>               Navigate to URL

@@ -216,7 +216,7 @@ Gotchas worth knowing:
 `roddy stub rules.json` intercepts every request the browser makes — pages,
 content scripts, and extension service workers — and answers matching ones
 from a JSON rules file. It holds the session in the foreground until Ctrl+C,
-printing one line per decision; run it in the background from scripts:
+printing one line per matched decision; run it in the background from scripts:
 
 ```bash
 roddy stub rules.json & STUB=$!
@@ -224,6 +224,12 @@ roddy open https://example.com          # the page and the extension now see stu
 roddy sw eval 'fetch("https://api.example.com/user").then(r => r.json())'
 kill $STUB                              # requests flow to the real network again
 ```
+
+Start the stub **before** the pages it should cover: interception only applies
+to documents committed after it starts, so an already-open tab keeps the live
+network until `roddy reload` (the command warns on stderr when it finds open
+pages). Add `--verbose` to log the unmatched requests too — that is how to see
+why a rule is not firing.
 
 Rules use Playwright's conventions (globs where `**` crosses path segments and
 `*` does not; verbs fulfill/abort/continue with Playwright's field names), so
