@@ -94,6 +94,8 @@ type State struct {
 	ProxyPID   int    `json:"proxy_pid,omitempty"`  // PID of auth proxy helper
 	ProxyPort  int    `json:"proxy_port,omitempty"` // local port of auth proxy
 
+	Unsandboxed bool `json:"unsandboxed,omitempty"` // Chrome launched with --no-sandbox
+
 	Extensions []extensionInfo `json:"extensions,omitempty"` // extensions passed to --load-extension
 }
 
@@ -500,8 +502,7 @@ func inContainerEnv() bool {
 // A DETECTED container therefore never attempts the sandbox: that reproduces
 // the pre-sandbox-default behaviour exactly — no failed attempt, no reliance
 // on matching an error's shape. Containers this misses fall through to the
-// sandboxed attempt, whose retry (and newStartLauncher's Delete of rod's
-// container-seeded --no-sandbox) is what covers them.
+// sandboxed attempt; the sandbox-shaped-error retry is what covers them.
 func launchUnsandboxed(noSandboxFlag bool, euid int, inContainer bool) (unsandboxed bool, reason string) {
 	switch {
 	case noSandboxFlag:
@@ -509,16 +510,17 @@ func launchUnsandboxed(noSandboxFlag bool, euid int, inContainer bool) (unsandbo
 	case euid == 0:
 		return true, "running as root; Chrome cannot sandbox itself"
 	case inContainer:
-		return true, "container detected; Chrome's sandbox needs kernel support containers lack"
+		return true, "container detected; its default seccomp/user-namespace policy usually blocks Chrome's sandbox"
 	}
 	return false, ""
 }
 
 // sandboxLaunchError reports whether a failed launch looks like Chrome could
 // not set up its sandbox. rod's launch error carries Chrome's whole stderr
-// buffer, and healthy runs print lines mentioning the sandbox and the zygote
-// ("InitializeSandbox() called with multiple threads", "Failed to adjust OOM
-// score of renderer") — so match the phrases that name the cause, not the
+// buffer, and once Chrome starts it prints routine lines carrying those words
+// either in the text ("InitializeSandbox() called with multiple threads") or
+// in a log-source prefix ("[ERROR:zygote_host_impl_linux.cc] Failed to adjust
+// OOM score of renderer") — so match the phrases that name the cause, not the
 // words.
 func sandboxLaunchError(err error) bool {
 	if err == nil {
@@ -542,19 +544,25 @@ func sandboxLaunchError(err error) bool {
 // launchWithFallback runs launch and, only when a sandboxed attempt failed for
 // a sandbox-shaped reason, retries unsandboxed. Any other failure is the
 // caller's to report: retrying on it would silently downgrade the session and
-// throw away the first error, the only record of what went wrong.
-func launchWithFallback(launch func(unsandboxed bool) (*launcher.Launcher, string, error), unsandboxed bool, warn io.Writer) (*launcher.Launcher, string, error) {
+// throw away the first error, the only record of what went wrong. The returned
+// bool is the mode that actually launched — the session's own record of
+// whether the sandbox is on.
+func launchWithFallback(launch func(unsandboxed bool) (*launcher.Launcher, string, error), unsandboxed bool, warn io.Writer) (*launcher.Launcher, string, bool, error) {
 	l, debugURL, err := launch(unsandboxed)
 	if err == nil || unsandboxed || !sandboxLaunchError(err) {
-		return l, debugURL, err
+		return l, debugURL, unsandboxed, err
 	}
 	fmt.Fprintf(warn, "note: sandboxed launch failed (%v); retrying with --no-sandbox\n", err)
-	return launch(true)
+	l, debugURL, err = launch(true)
+	return l, debugURL, true, err
 }
 
 // applySandboxFlags puts the sandbox decision on a launcher. The sandboxed
 // branch deletes rather than omits --no-sandbox: launcher.New() seeds it
-// inside containers rod detects.
+// inside containers rod detects, so deleting keeps "sandboxed" meaning the
+// same on any launcher handed in, whatever the caller decided. cmdStart's
+// shipped path sends detected containers down the unsandboxed branch, so it
+// does not depend on this.
 func applySandboxFlags(l *launcher.Launcher, unsandboxed bool) *launcher.Launcher {
 	if !unsandboxed {
 		return l.Delete("no-sandbox")
@@ -569,9 +577,8 @@ func applySandboxFlags(l *launcher.Launcher, unsandboxed bool) *launcher.Launche
 // newStartLauncher builds the launcher for one start attempt. Sandboxed is the
 // default; unsandboxed adds --no-sandbox and, where the platform takes it,
 // --single-process — the environments that need one tend to need the other
-// (gVisor's multi-process compositor hangs screenshots,
-// notes/gvisor-screenshots/README.md), and --single-process without a reason
-// widens every renderer bug into a whole-browser compromise.
+// (see singleProcessSupported in chrome_flags.go), and --single-process on a
+// platform that does not need it turns a renderer crash into a browser abort.
 func newStartLauncher(dataDir string, headless, unsandboxed bool, extensions []extensionInfo) *launcher.Launcher {
 	l := launcher.New().
 		Set("disable-gpu").
@@ -651,10 +658,11 @@ func cmdStart(args []string) {
 
 		// Launch ourselves as the proxy helper in the background. The auth
 		// header goes over stdin, not argv: argv is readable by every user on
-		// the machine via ps for the helper's whole (detached) lifetime.
+		// the machine via ps for the helper's whole (detached) lifetime. (The
+		// helper's environment still carries HTTPS_PROXY, which `ps eww` shows
+		// to its owner and to root.)
 		exe, _ := os.Executable()
-		cmd := exec.Command(exe, "_proxy",
-			strconv.Itoa(proxyPort), server)
+		cmd := proxyHelperCommand(exe, proxyPort, server)
 		stdin, err := cmd.StdinPipe()
 		if err != nil {
 			fatal("failed to start proxy helper: %v", err)
@@ -665,19 +673,21 @@ func cmdStart(args []string) {
 		}
 		proxyPID = cmd.Process.Pid
 		if _, err := io.WriteString(stdin, authHeader+"\n"); err != nil {
+			fmt.Fprintf(os.Stderr, "stopping proxy helper (PID %d)\n", proxyPID)
 			signalPID(proxyPID)
 			fatal("failed to hand credentials to the proxy helper: %v", err)
 		}
-		stdin.Close()
+		_ = stdin.Close() // header is already through; a close error adds nothing
 		// Detach so it survives after we exit
 		cmd.Process.Release()
 
 		// Wait for the proxy to be ready
 		time.Sleep(500 * time.Millisecond)
 
-		// TLS-inspecting upstream proxies re-sign certificates with a CA Chrome
-		// does not trust (notes/claude-chrome-proxy/README.md). The helper
-		// itself is a transparent CONNECT tunnel and originates no cert error.
+		// Chrome rejects the chain when the upstream proxy inspects TLS and
+		// re-signs, or when the environment lacks the root CAs
+		// (notes/claude-chrome-proxy/README.md). The helper itself is a
+		// transparent CONNECT tunnel and originates no cert error.
 		ignoreCertErrors = true
 		fmt.Printf("Auth proxy started (PID %d, port %d) -> %s\n", proxyPID, proxyPort, server)
 	}
@@ -698,7 +708,7 @@ func cmdStart(args []string) {
 	if reason != "" {
 		fmt.Fprintf(os.Stderr, "note: %s, launching with --no-sandbox\n", reason)
 	}
-	l, debugURL, err := launchWithFallback(launch, unsandboxed, os.Stderr)
+	l, debugURL, unsandboxed, err := launchWithFallback(launch, unsandboxed, os.Stderr)
 	if err != nil {
 		// The proxy helper was spawned before the launch; without a state file
 		// recording its PID, nothing could ever stop it.
@@ -713,13 +723,14 @@ func cmdStart(args []string) {
 	pid := l.PID()
 
 	state := &State{
-		DebugURL:   debugURL,
-		ChromePID:  pid,
-		ActivePage: 0,
-		DataDir:    dataDir,
-		ProxyPID:   proxyPID,
-		ProxyPort:  proxyPort,
-		Extensions: extensions,
+		DebugURL:    debugURL,
+		ChromePID:   pid,
+		ActivePage:  0,
+		DataDir:     dataDir,
+		ProxyPID:    proxyPID,
+		ProxyPort:   proxyPort,
+		Extensions:  extensions,
+		Unsandboxed: unsandboxed,
 	}
 
 	if err := saveState(state); err != nil {
@@ -731,7 +742,11 @@ func cmdStart(args []string) {
 		fatal("failed to save state: %v", err)
 	}
 
-	fmt.Printf("Chrome started (PID %d)\n", pid)
+	if unsandboxed {
+		fmt.Printf("Chrome started (PID %d, sandbox off)\n", pid)
+	} else {
+		fmt.Printf("Chrome started (PID %d)\n", pid)
+	}
 	fmt.Printf("Debug URL: %s\n", debugURL)
 	for _, ext := range extensions {
 		fmt.Printf("Extension loaded: %s (%s)\n", ext.Name, ext.ID)
@@ -858,6 +873,11 @@ func cmdStatus(args []string) {
 	fmt.Printf("Debug URL: %s\n", s.DebugURL)
 	fmt.Printf("Pages: %d\n", len(pages))
 	fmt.Printf("Active page: %d\n", s.ActivePage)
+	if s.Unsandboxed {
+		// Nothing when sandboxed: state files written before the field existed
+		// decode as false, and "Sandbox: on" would be a guess there.
+		fmt.Println("Sandbox: off")
+	}
 	for _, ext := range s.Extensions {
 		fmt.Printf("Extension: %s (%s)\n", ext.Name, ext.ID)
 	}
@@ -2224,10 +2244,15 @@ func detectProxy() (server, user, pass string, needed bool) {
 	return server, user, pass, true
 }
 
-// readProxyAuthHeader reads the Proxy-Authorization value the parent start
-// command writes to the helper's stdin, one line, credentials included —
-// which is why it is not an argv argument: ps shows argv to every user on the
-// machine for as long as the helper runs.
+// proxyHelperCommand builds the command that runs this binary as the auth
+// proxy helper. The credentials are absent by construction: they go over the
+// helper's stdin, never argv.
+func proxyHelperCommand(exe string, port int, server string) *exec.Cmd {
+	return exec.Command(exe, "_proxy", strconv.Itoa(port), server)
+}
+
+// readProxyAuthHeader reads one line — the Proxy-Authorization value — from
+// the helper's stdin and returns it with surrounding space trimmed.
 func readProxyAuthHeader(r io.Reader) (string, error) {
 	line, err := bufio.NewReader(r).ReadString('\n')
 	// ReadString returns the partial line alongside the error, so the error
@@ -2247,7 +2272,7 @@ func readProxyAuthHeader(r io.Reader) (string, error) {
 // that forwards to the upstream proxy with credentials.
 func cmdInternalProxy(args []string) {
 	// Exactly two: a caller still passing the header as argv[2] must fail
-	// loudly instead of blocking forever on a stdin nobody writes to.
+	// loudly instead of hanging on an inherited stdin.
 	if len(args) != 2 {
 		fatal("usage: roddy _proxy <port> <upstream> (auth header on stdin)")
 	}

@@ -14,7 +14,7 @@ This fork exists to keep those fixes available and installable. It is not a host
 ### What Roddy adds over upstream
 
 - **`--extension` flag** — load unpacked extension directories or packed `.crx`/`.zip` archives into a headless session, and list them with `roddy extensions`. ([upstream PR #52](https://github.com/simonw/rodney/pull/52))
-- **Browser-process crash fixes** — stops Chromium running in-development features that abort the browser, and reserves `--single-process` for unsandboxed launches (containers, gVisor), never using it on macOS where it crashes on startup. ([upstream PR #54](https://github.com/simonw/rodney/pull/54))
+- **Browser-process crash fixes** — stops Chromium running in-development features that abort the browser, and reserves `--single-process` for unsandboxed launches (containers, gVisor), never using it on macOS where it aborts the browser as soon as a page touches `navigator.mediaDevices`. ([upstream PR #54](https://github.com/simonw/rodney/pull/54))
 - **Screenshot reliability** — raises the target before capturing, fixing captures that timed out when the page was not in the foreground. ([upstream PR #55](https://github.com/simonw/rodney/pull/55))
 
 ### Migrating from Rodney
@@ -123,7 +123,8 @@ detected by its marker files or environment (Docker, Podman, Kubernetes, and
 gVisor under any of them), where the kernel support Chrome's sandbox needs is
 usually absent. Both are decided up front, with a note on stderr and no failed
 first attempt; an unsandboxed launch also gets `--single-process` where the
-platform takes it, which those environments need for screenshots.
+platform takes it, which those environments need for screenshots — unless
+extensions are loaded, which drops it again (it breaks them).
 
 The detection is a marker check, not a kernel probe, so containers it does not
 recognise (LXC, systemd-nspawn, containerd outside Kubernetes) get the ordinary
@@ -739,7 +740,7 @@ Global state is stored in `~/.roddy/state.json` with Chrome user data in `~/.rod
 In environments with authenticated HTTP proxies (e.g., `HTTPS_PROXY=http://user:pass@host:port`), `roddy start` automatically:
 
 1. Detects the proxy credentials from environment variables
-2. Launches a local forwarding proxy that injects `Proxy-Authorization` headers into CONNECT requests (the credentials are handed to it over stdin, so they never show up in `ps`)
+2. Launches a local forwarding proxy that injects `Proxy-Authorization` headers into CONNECT requests (the credentials are handed to it over stdin, so they are not in its argv, which `ps` shows to every user on the machine — its environment still carries `HTTPS_PROXY`, visible to the owner and root via `ps eww`)
 3. Configures Chrome to use the local proxy
 
 This is necessary because Chrome cannot natively authenticate to proxies during HTTPS tunnel (CONNECT) establishment. The local proxy runs as a background process and is automatically cleaned up by `roddy stop`.

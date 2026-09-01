@@ -85,12 +85,12 @@ Target Server
 The `roddy` binary doubles as a proxy when invoked with the hidden `_proxy` subcommand:
 
 ```bash
-roddy _proxy <port> <upstream-host:port> <auth-header>
+printf '%s\n' "$auth_header" | roddy _proxy <port> <upstream-host:port>
 ```
 
-**Superseded:** the header no longer travels in argv — `ps` showed it to every
-user on the machine for the helper's whole lifetime. It is now written to the
-helper's stdin as one line, and a third argument is rejected.
+**Superseded:** the header used to be `argv[2]` — `ps` showed it to every user
+on the machine for the helper's whole lifetime. It now arrives as one line on
+stdin, and the old three-argument form is rejected.
 
 This is launched as a background process by `roddy start`. It runs in its own
 session (`Setsid: true`) so it survives after the parent exits. Its PID is stored
@@ -153,8 +153,9 @@ If no authenticated proxy is detected, Chrome launches normally without the help
 roddy start
   1. detectProxy() -> finds HTTPS_PROXY with auth
   2. Find free port for local proxy
-  3. Launch: roddy _proxy <port> <upstream> <authHeader> (background, detached)
-     Superseded: <authHeader> is written to the helper's stdin, not argv.
+  3. Launch: roddy _proxy <port> <upstream> (background, detached), then write
+     <authHeader> to its stdin
+     Superseded: <authHeader> used to be a third argument, visible in ps.
   4. Store proxy PID in state
   5. Launch Chrome with --proxy-server=http://127.0.0.1:<port>
                         --ignore-certificate-errors

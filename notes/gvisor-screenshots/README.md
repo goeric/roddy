@@ -92,7 +92,8 @@ software-only rendering without the Viz display compositor's full IPC machinery.
 
 ## Fix Applied
 
-Added `Set("single-process")` to the Chrome launcher in `cmdStart()`:
+Added `Set("single-process")` to the Chrome launcher `start` builds
+(`applySandboxFlags`, called from `newStartLauncher`):
 
 ```go
 l := launcher.New().
