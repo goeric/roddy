@@ -104,6 +104,10 @@ l := launcher.New().
     UserDataDir(dataDir)
 ```
 
+Since the sandbox-by-default change, `--single-process` (and `--no-sandbox`)
+only go on an unsandboxed launch — a container, root, or `--no-sandbox`. A
+plain sandboxed start gets neither.
+
 ## Trade-offs of `--single-process`
 
 **Pros:**

@@ -24,6 +24,7 @@ import (
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/proto"
+	"github.com/go-rod/rod/lib/utils"
 	"github.com/ysmood/gson"
 )
 
@@ -479,11 +480,90 @@ func parseStartArgs(args []string) (startOptions, error) {
 	return opts, nil
 }
 
-// launchUnsandboxed reports whether start must skip Chrome's sandbox up
-// front: the user asked with --no-sandbox, or the process runs as root, which
-// Chrome refuses to sandbox at all.
-func launchUnsandboxed(noSandboxFlag bool, euid int) bool {
-	return noSandboxFlag || euid == 0
+// inContainerEnv reports whether this process runs in a container. rod's
+// utils.InContainer covers /.dockerenv, /.containerenv and
+// KUBERNETES_SERVICE_HOST; podman writes /run/.containerenv instead.
+func inContainerEnv() bool {
+	if utils.InContainer {
+		return true
+	}
+	_, err := os.Stat("/run/.containerenv")
+	return err == nil
+}
+
+// launchUnsandboxed reports whether start must skip Chrome's sandbox up front:
+// the user asked with --no-sandbox, the process runs as root, or it runs in a
+// container. reason is the human-readable half of a "note: ... , launching
+// with --no-sandbox" line, empty when the flag decided it or when the launch
+// stays sandboxed.
+//
+// A DETECTED container therefore never attempts the sandbox: that reproduces
+// the pre-sandbox-default behaviour exactly — no failed attempt, no reliance
+// on matching an error's shape. Containers this misses fall through to the
+// sandboxed attempt, whose retry (and newStartLauncher's Delete of rod's
+// container-seeded --no-sandbox) is what covers them.
+func launchUnsandboxed(noSandboxFlag bool, euid int, inContainer bool) (unsandboxed bool, reason string) {
+	switch {
+	case noSandboxFlag:
+		return true, ""
+	case euid == 0:
+		return true, "running as root; Chrome cannot sandbox itself"
+	case inContainer:
+		return true, "container detected; Chrome's sandbox needs kernel support containers lack"
+	}
+	return false, ""
+}
+
+// sandboxLaunchError reports whether a failed launch looks like Chrome could
+// not set up its sandbox. rod's launch error carries Chrome's whole stderr
+// buffer, and healthy runs print lines mentioning the sandbox and the zygote
+// ("InitializeSandbox() called with multiple threads", "Failed to adjust OOM
+// score of renderer") — so match the phrases that name the cause, not the
+// words.
+func sandboxLaunchError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	for _, cause := range []string{
+		"failed to move to new namespace",
+		"no usable sandbox",
+		"suid sandbox helper",
+		"running as root without --no-sandbox",
+		"zygote could not fork",
+	} {
+		if strings.Contains(msg, cause) {
+			return true
+		}
+	}
+	return false
+}
+
+// launchWithFallback runs launch and, only when a sandboxed attempt failed for
+// a sandbox-shaped reason, retries unsandboxed. Any other failure is the
+// caller's to report: retrying on it would silently downgrade the session and
+// throw away the first error, the only record of what went wrong.
+func launchWithFallback(launch func(unsandboxed bool) (*launcher.Launcher, string, error), unsandboxed bool, warn io.Writer) (*launcher.Launcher, string, error) {
+	l, debugURL, err := launch(unsandboxed)
+	if err == nil || unsandboxed || !sandboxLaunchError(err) {
+		return l, debugURL, err
+	}
+	fmt.Fprintf(warn, "note: sandboxed launch failed (%v); retrying with --no-sandbox\n", err)
+	return launch(true)
+}
+
+// applySandboxFlags puts the sandbox decision on a launcher. The sandboxed
+// branch deletes rather than omits --no-sandbox: launcher.New() seeds it
+// inside containers rod detects.
+func applySandboxFlags(l *launcher.Launcher, unsandboxed bool) *launcher.Launcher {
+	if !unsandboxed {
+		return l.Delete("no-sandbox")
+	}
+	l = l.Set("no-sandbox")
+	if singleProcessSupported() {
+		l = l.Set("single-process")
+	}
+	return l
 }
 
 // newStartLauncher builds the launcher for one start attempt. Sandboxed is the
@@ -499,12 +579,7 @@ func newStartLauncher(dataDir string, headless, unsandboxed bool, extensions []e
 		UserDataDir(dataDir).
 		Headless(headless)
 
-	if unsandboxed {
-		l = l.Set("no-sandbox")
-		if singleProcessSupported() {
-			l = l.Set("single-process")
-		}
-	}
+	l = applySandboxFlags(l, unsandboxed)
 
 	l = configureExperiments(l)
 
@@ -600,7 +675,10 @@ func cmdStart(args []string) {
 		// Wait for the proxy to be ready
 		time.Sleep(500 * time.Millisecond)
 
-		ignoreCertErrors = true // Proxy requires ignoring cert errors
+		// TLS-inspecting upstream proxies re-sign certificates with a CA Chrome
+		// does not trust (notes/claude-chrome-proxy/README.md). The helper
+		// itself is a transparent CONNECT tunnel and originates no cert error.
+		ignoreCertErrors = true
 		fmt.Printf("Auth proxy started (PID %d, port %d) -> %s\n", proxyPID, proxyPort, server)
 	}
 
@@ -616,17 +694,11 @@ func cmdStart(args []string) {
 		return l, u, err
 	}
 
-	unsandboxed := launchUnsandboxed(opts.noSandbox, os.Geteuid())
-	if unsandboxed && !opts.noSandbox {
-		fmt.Fprintln(os.Stderr, "note: running as root; Chrome cannot sandbox itself, launching with --no-sandbox")
+	unsandboxed, reason := launchUnsandboxed(opts.noSandbox, os.Geteuid(), inContainerEnv())
+	if reason != "" {
+		fmt.Fprintf(os.Stderr, "note: %s, launching with --no-sandbox\n", reason)
 	}
-	l, debugURL, err := launch(unsandboxed)
-	if err != nil && !unsandboxed {
-		// Kernels without sandbox support (containers, gVisor) fail here; the
-		// retry launches the way those environments require.
-		fmt.Fprintln(os.Stderr, "note: sandboxed launch failed; retrying with --no-sandbox")
-		l, debugURL, err = launch(true)
-	}
+	l, debugURL, err := launchWithFallback(launch, unsandboxed, os.Stderr)
 	if err != nil {
 		// The proxy helper was spawned before the launch; without a state file
 		// recording its PID, nothing could ever stop it.
@@ -2158,11 +2230,14 @@ func detectProxy() (server, user, pass string, needed bool) {
 // machine for as long as the helper runs.
 func readProxyAuthHeader(r io.Reader) (string, error) {
 	line, err := bufio.NewReader(r).ReadString('\n')
-	if header := strings.TrimSpace(line); header != "" {
-		return header, nil
-	}
+	// ReadString returns the partial line alongside the error, so the error
+	// has to be checked first or a truncated credential passes for a whole
+	// one. EOF is not such an error — the writer closed without a newline.
 	if err != nil && !errors.Is(err, io.EOF) {
 		return "", err
+	}
+	if header := strings.TrimSpace(line); header != "" {
+		return header, nil
 	}
 	return "", errors.New("no auth header arrived on stdin")
 }
@@ -2171,7 +2246,9 @@ func readProxyAuthHeader(r io.Reader) (string, error) {
 // with the Proxy-Authorization header on stdin. It runs a local auth proxy
 // that forwards to the upstream proxy with credentials.
 func cmdInternalProxy(args []string) {
-	if len(args) < 2 {
+	// Exactly two: a caller still passing the header as argv[2] must fail
+	// loudly instead of blocking forever on a stdin nobody writes to.
+	if len(args) != 2 {
 		fatal("usage: roddy _proxy <port> <upstream> (auth header on stdin)")
 	}
 	port := args[0]

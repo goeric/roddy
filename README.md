@@ -14,7 +14,7 @@ This fork exists to keep those fixes available and installable. It is not a host
 ### What Roddy adds over upstream
 
 - **`--extension` flag** — load unpacked extension directories or packed `.crx`/`.zip` archives into a headless session, and list them with `roddy extensions`. ([upstream PR #52](https://github.com/simonw/rodney/pull/52))
-- **Browser-process crash fixes** — stops Chromium running in-development features that abort the browser, and skips `--single-process` on macOS where it crashes on startup. ([upstream PR #54](https://github.com/simonw/rodney/pull/54))
+- **Browser-process crash fixes** — stops Chromium running in-development features that abort the browser, and reserves `--single-process` for unsandboxed launches (containers, gVisor), never using it on macOS where it crashes on startup. ([upstream PR #54](https://github.com/simonw/rodney/pull/54))
 - **Screenshot reliability** — raises the target before capturing, fixing captures that timed out when the page was not in the foreground. ([upstream PR #55](https://github.com/simonw/rodney/pull/55))
 
 ### Migrating from Rodney
@@ -117,11 +117,21 @@ roddy status             # Show browser info and active page
 roddy stop               # Shut down Chrome
 ```
 
-Chrome runs with its sandbox on by default. Environments whose kernel cannot
-provide one — containers without user namespaces, gVisor — get an automatic
-retry with `--no-sandbox` (and `--single-process`, which those environments
-need for screenshots); pass `--no-sandbox` yourself to skip the failed first
-attempt. Running as root implies it, since Chrome refuses to sandbox there.
+Chrome runs with its sandbox on by default. Running as root implies
+`--no-sandbox` — Chrome refuses to sandbox there — and so does a container
+detected by its marker files or environment (Docker, Podman, Kubernetes, and
+gVisor under any of them), where the kernel support Chrome's sandbox needs is
+usually absent. Both are decided up front, with a note on stderr and no failed
+first attempt; an unsandboxed launch also gets `--single-process` where the
+platform takes it, which those environments need for screenshots.
+
+The detection is a marker check, not a kernel probe, so containers it does not
+recognise (LXC, systemd-nspawn, containerd outside Kubernetes) get the ordinary
+sandboxed attempt. That attempt, if it fails *for a sandbox reason* — Chrome's
+own stderr naming the cause, e.g. "Failed to move to new namespace" or "No
+usable sandbox!" — retries once with `--no-sandbox` and says so; any other
+failure is reported as-is rather than silently downgraded. `--no-sandbox` is
+the explicit path when you already know the sandbox will not come up.
 
 ### Browser extensions
 

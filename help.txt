@@ -10,10 +10,10 @@ Browser lifecycle:
                                   auto-loads a built .output/chrome-mv3 and
                                   says so; --no-extension skips that.
                                   Chrome runs sandboxed by default;
-                                  --no-sandbox turns that off for containers
-                                  and gVisor, where start also falls back to
-                                  it on its own (and as root, where Chrome
-                                  refuses to sandbox)
+                                  --no-sandbox turns that off. As root and in
+                                  containers it is implied up front, no failed
+                                  attempt. A sandboxed launch that fails for a
+                                  sandbox reason retries unsandboxed and says so
   roddy connect <host:port>      Connect to existing Chrome on remote debug port
   roddy stop                     Shut down Chrome
   roddy status                   Show browser status
