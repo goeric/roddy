@@ -741,13 +741,13 @@ In environments with authenticated HTTP proxies (e.g., `HTTPS_PROXY=http://user:
 
 1. Detects the proxy credentials from environment variables
 2. Launches a local forwarding proxy that injects `Proxy-Authorization` headers into CONNECT requests (the credentials are handed to it over stdin, so they are not in its argv, which `ps` shows to every user on the machine — its environment still carries `HTTPS_PROXY`, visible to the owner and root via `ps eww`)
-3. Configures Chrome to use the local proxy
+3. Configures Chrome to use the local proxy on the port that proxy reports back
 
 This is necessary because Chrome cannot natively authenticate to proxies during HTTPS tunnel (CONNECT) establishment. The local proxy runs as a background process and is automatically cleaned up by `roddy stop`.
 
-`start` waits for that local proxy to accept connections and fails with an `error:` (rather than launching Chrome at a dead port) if it does not come up; the helper's own output goes to `proxy.log` in the state directory, where its failure message can be read back.
+`start` waits for that local proxy to report the port it bound; if the helper exits first or never reports one, `start` stops it and fails (exit 2) with the helper's own output in the error message. That output also lands in `proxy.log` under the state directory (`~/.roddy/`, or `./.roddy/` with `--local`), overwritten on each `start`.
 
-See [claude-code-chrome-proxy.md](claude-code-chrome-proxy.md) for detailed technical notes.
+See [notes/claude-chrome-proxy/README.md](notes/claude-chrome-proxy/README.md) for detailed technical notes.
 
 ## How it works
 
