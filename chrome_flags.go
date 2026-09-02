@@ -1,13 +1,11 @@
 package main
 
 import (
-	"runtime"
-
 	"github.com/go-rod/rod/lib/launcher"
 )
 
 // singleProcessSupported reports whether --single-process is safe to pass on
-// this platform.
+// goos.
 //
 // The flag collapses Chromium's renderer, GPU and utility services into the
 // browser process. It is there because the multi-process compositor hangs under
@@ -23,8 +21,8 @@ import (
 // Device enumeration is routine in the fingerprinting scripts commercial sites
 // ship, which is what made this look like "heavy sites crash the browser".
 // Losing --single-process on macOS costs nothing: gVisor is a Linux sandbox.
-func singleProcessSupported() bool {
-	return runtime.GOOS != "darwin"
+func singleProcessSupported(goos string) bool {
+	return goos != "darwin"
 }
 
 // configureExperiments stops Chromium from running features that are still
