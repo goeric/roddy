@@ -1504,50 +1504,43 @@ func TestUseSingleProcess(t *testing.T) {
 	}
 }
 
-// A sandboxed launch must DELETE --no-sandbox, not merely skip setting it:
-// rod's launcher.New() seeds it inside containers, where a test that only
-// checks a fresh launcher would pass without exercising anything.
-func TestApplySandboxFlags_DeletesContainerSeededNoSandbox(t *testing.T) {
-	l := applySandboxFlags(launcher.New().Set("no-sandbox"), false, false)
-	if l.Has("no-sandbox") {
-		t.Error("--no-sandbox survived a sandboxed launch")
+// applySandboxFlags decides both flags outright: an off decision DELETES its
+// flag rather than merely skipping it, so the result is the same whatever the
+// launcher handed in already carries — which is what the preseeded pass
+// exercises. rod's launcher.New() seeds --no-sandbox inside containers, where
+// a test that only checks a fresh launcher would pass without exercising
+// anything.
+func TestApplySandboxFlags(t *testing.T) {
+	cases := []struct {
+		name              string
+		unsandboxed       bool
+		singleProcess     bool
+		wantNoSandbox     bool
+		wantSingleProcess bool
+	}{
+		{"sandboxed", false, false, false, false},
+		// A sandboxed launch drops --single-process whatever the caller
+		// decided: the flag only ever rides on an unsandboxed launch.
+		{"sandboxed, single process asked for", false, true, false, false},
+		{"unsandboxed, multi-process", true, false, true, false},
+		{"unsandboxed, single process", true, true, true, true},
 	}
-	if l.Has("single-process") {
-		t.Error("--single-process set on a sandboxed launch")
-	}
-}
-
-// Deleted, not skipped, so an off decision holds on any launcher handed in.
-// Nothing seeds --single-process; this pins the contract, not a rod quirk.
-func TestApplySandboxFlags_DeletesSingleProcessWhenOff(t *testing.T) {
-	l := applySandboxFlags(launcher.New().Set("single-process"), true, false)
-	if !l.Has("no-sandbox") {
-		t.Error("--no-sandbox missing from an unsandboxed launch")
-	}
-	if l.Has("single-process") {
-		t.Error("--single-process survived a launch that did not ask for it")
-	}
-}
-
-// A sandboxed launch drops --single-process whatever the caller decided: the
-// flag only ever rides on an unsandboxed launch.
-func TestApplySandboxFlags_SandboxedDropsSingleProcess(t *testing.T) {
-	l := applySandboxFlags(launcher.New().Set("single-process"), false, true)
-	if l.Has("no-sandbox") {
-		t.Error("--no-sandbox set on a sandboxed launch")
-	}
-	if l.Has("single-process") {
-		t.Error("--single-process survived a sandboxed launch")
-	}
-}
-
-func TestApplySandboxFlags_Unsandboxed(t *testing.T) {
-	l := applySandboxFlags(launcher.New(), true, true)
-	if !l.Has("no-sandbox") {
-		t.Error("--no-sandbox missing from an unsandboxed launch")
-	}
-	if !l.Has("single-process") {
-		t.Error("--single-process missing from a launch that asked for it")
+	for _, c := range cases {
+		for _, preseeded := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/preseeded=%v", c.name, preseeded), func(t *testing.T) {
+				l := launcher.New()
+				if preseeded {
+					l = l.Set("no-sandbox").Set("single-process")
+				}
+				l = applySandboxFlags(l, c.unsandboxed, c.singleProcess)
+				if got := l.Has("no-sandbox"); got != c.wantNoSandbox {
+					t.Errorf("--no-sandbox = %v, want %v", got, c.wantNoSandbox)
+				}
+				if got := l.Has("single-process"); got != c.wantSingleProcess {
+					t.Errorf("--single-process = %v, want %v", got, c.wantSingleProcess)
+				}
+			})
+		}
 	}
 }
 
@@ -1755,27 +1748,11 @@ func TestUnsandboxedMultiProcessLaunch(t *testing.T) {
 	if l.Has("single-process") {
 		t.Fatal("--single-process set on a launch that opted out")
 	}
-	u, err := l.Launch()
-	if err != nil {
-		t.Fatalf("unsandboxed multi-process launch failed: %v", err)
-	}
-	browser := rod.New().ControlURL(u)
-	if err := browser.Connect(); err != nil {
-		// Chrome is Leakless(false): a failure before the defer would orphan it.
-		l.Kill()
-		waitProcessGone(t, l.PID())
-		t.Fatalf("connect: %v", err)
-	}
-	defer func() {
-		if err := browser.Close(); err != nil {
-			l.Kill()
-		}
-		waitProcessGone(t, l.PID())
-	}()
+	page, cleanup := launcherPage(t, l)
+	defer cleanup()
 
-	page, err := browser.Page(proto.TargetCreateTarget{URL: env.server.URL + "/"})
-	if err != nil {
-		t.Fatalf("open a page: %v", err)
+	if err := page.Navigate(env.server.URL + "/"); err != nil {
+		t.Fatalf("navigate: %v", err)
 	}
 	if err := page.WaitLoad(); err != nil {
 		t.Fatalf("wait for load: %v", err)
@@ -2362,15 +2339,20 @@ func TestInsecureFlag_WithSelfSignedCert(t *testing.T) {
 }
 
 // startLauncherPage launches Chrome the way start does — unsandboxed, so it
-// runs wherever the suite does — and returns a blank page plus the teardown
-// Leakless(false) makes mandatory: an unwaited Chrome races t.TempDir cleanup.
+// runs wherever the suite does.
 func startLauncherPage(t *testing.T, ignoreCertErrors bool) (*rod.Page, func()) {
 	t.Helper()
-	l := autoStartLauncher(t, startLaunch{
+	return launcherPage(t, autoStartLauncher(t, startLaunch{
 		dataDir:          t.TempDir(),
 		headless:         true,
 		ignoreCertErrors: ignoreCertErrors,
-	})
+	}))
+}
+
+// launcherPage launches l and returns a blank page plus the teardown
+// Leakless(false) makes mandatory: an unwaited Chrome races t.TempDir cleanup.
+func launcherPage(t *testing.T, l *launcher.Launcher) (*rod.Page, func()) {
+	t.Helper()
 	u, err := l.Launch()
 	if err != nil {
 		t.Fatalf("launch: %v", err)

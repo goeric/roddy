@@ -1,7 +1,6 @@
 package main
 
 import (
-	"runtime"
 	"strings"
 	"testing"
 
@@ -73,8 +72,5 @@ func TestSingleProcessSupported_SkipsMacOSOnly(t *testing.T) {
 	}
 	if singleProcessSupported("darwin") {
 		t.Error(`singleProcessSupported("darwin") = true, want false`)
-	}
-	if got, want := singleProcessSupported(runtime.GOOS), runtime.GOOS != "darwin"; got != want {
-		t.Errorf("singleProcessSupported(%s) = %v, want %v", runtime.GOOS, got, want)
 	}
 }
