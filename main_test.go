@@ -1849,42 +1849,36 @@ func isolationLauncher(t *testing.T) *launcher.Launcher {
 // is absent from the parent's frame tree, an in-process child the mirror image.
 func assertIsolation(t *testing.T, l *launcher.Launcher, want bool) {
 	t.Helper()
-	page, cleanup := isolationFixturePage(t, l)
+	page, cleanup := launcherPage(t, l)
 	defer cleanup()
+
+	if err := page.Navigate(env.server.URL + "/isolation"); err != nil {
+		t.Fatalf("navigate: %v", err)
+	}
+	if err := page.WaitLoad(); err != nil {
+		t.Fatalf("wait for load: %v", err)
+	}
 
 	if !want {
 		// An in-process child shows in the parent's frame tree where an OOPIF
 		// does not, so this is the proof the iframe loaded at all.
-		if got := waitChildFrames(t, page); len(got) != 1 || !strings.Contains(got[0], "/isolation/child") {
-			t.Fatalf("child frames = %q, want the fixture's iframe", got)
+		frames := waitURLs(func() []string { return childFrames(t, page) })
+		if len(frames) != 1 || !strings.Contains(frames[0], "/isolation/child") {
+			t.Fatalf("child frames = %q, want the fixture's iframe", frames)
 		}
 		if got := iframeTargets(t, page.Browser()); len(got) > 0 {
 			t.Errorf("iframe targets = %q, want none with site isolation off", got)
 		}
 		return
 	}
-	if got := waitIframeTargets(t, page.Browser()); len(got) != 1 || !strings.Contains(got[0], "/isolation/child") {
+	targets := waitURLs(func() []string { return iframeTargets(t, page.Browser()) })
+	if len(targets) != 1 || !strings.Contains(targets[0], "/isolation/child") {
 		// The frame tree tells the two ways this fails apart: a child listed
 		// there is an in-process iframe (isolation off), no child at all is a
 		// fixture that never loaded one.
 		t.Errorf("iframe targets = %q, want one for the cross-site child; child frames = %q",
-			got, childFrames(t, page))
+			targets, childFrames(t, page))
 	}
-}
-
-// isolationFixturePage launches l on the cross-site iframe fixture.
-func isolationFixturePage(t *testing.T, l *launcher.Launcher) (*rod.Page, func()) {
-	t.Helper()
-	page, cleanup := launcherPage(t, l)
-	if err := page.Navigate(env.server.URL + "/isolation"); err != nil {
-		cleanup()
-		t.Fatalf("navigate: %v", err)
-	}
-	if err := page.WaitLoad(); err != nil {
-		cleanup()
-		t.Fatalf("wait for load: %v", err)
-	}
-	return page, cleanup
 }
 
 // iframeTargets returns the URLs of the browser's out-of-process iframes.
@@ -1903,19 +1897,6 @@ func iframeTargets(t *testing.T, b *rod.Browser) []string {
 	return urls
 }
 
-// waitIframeTargets polls up to 5s: the OOPIF target is the browser's news, not
-// the page's, so the parent's load event does not order it.
-func waitIframeTargets(t *testing.T, b *rod.Browser) []string {
-	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if urls := iframeTargets(t, b); len(urls) > 0 || time.Now().After(deadline) {
-			return urls
-		}
-		time.Sleep(25 * time.Millisecond)
-	}
-}
-
 // childFrames returns the URLs of the page's in-process child frames.
 func childFrames(t *testing.T, p *rod.Page) []string {
 	t.Helper()
@@ -1930,12 +1911,13 @@ func childFrames(t *testing.T, p *rod.Page) []string {
 	return urls
 }
 
-// waitChildFrames polls the parent's frame tree for up to 5s.
-func waitChildFrames(t *testing.T, p *rod.Page) []string {
-	t.Helper()
+// waitURLs polls list for a non-empty result, up to 5s, and returns what it
+// last saw. The OOPIF target is the browser's news, not the page's, so the
+// parent's load event does not order it.
+func waitURLs(list func() []string) []string {
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		if urls := childFrames(t, p); len(urls) > 0 || time.Now().After(deadline) {
+		if urls := list(); len(urls) > 0 || time.Now().After(deadline) {
 			return urls
 		}
 		time.Sleep(25 * time.Millisecond)
