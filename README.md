@@ -126,9 +126,12 @@ gVisor under any of them), where the kernel support Chrome's sandbox needs is
 usually absent. Both are decided up front, with a note on stderr and no failed
 first attempt; an unsandboxed launch also gets `--single-process` where the
 platform takes it, which those environments need for screenshots — unless
-extensions are loaded, which drops it again (it breaks them). Site Isolation is
-on as well — the go-rod launcher defaults turn it off, and roddy turns it back
-on, so cross-site frames get processes of their own behind the sandbox.
+extensions are loaded, which drops it again (it breaks them).
+
+Site Isolation is on too: rod's launcher defaults turn it off, roddy turns it
+back on, so cross-site frames get renderer processes of their own — a second
+boundary behind the sandbox. It is moot under `--single-process`, where there is
+only one process.
 
 `--single-process` and `--no-single-process` override that derived default.
 `--no-single-process` is always accepted, and is simply a no-op where the flag

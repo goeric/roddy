@@ -1813,41 +1813,62 @@ func TestUnsandboxedMultiProcessLaunch(t *testing.T) {
 
 // A cross-site iframe renders in a process of its own under Site Isolation,
 // which CDP surfaces as a target of type "iframe" that Target.getTargets lists
-// with no Target.setAutoAttach, in either headless mode. Unsandboxed and
-// multi-process on purpose: the sandbox is a separate boundary and needs a
-// kernel CI may not have, while --single-process (env.browser, and start's auto
-// default on Linux) makes the process model moot.
+// with no Target.setAutoAttach. Unsandboxed and multi-process on purpose: the
+// sandbox is a separate boundary and needs a kernel CI may not have, while
+// --single-process (env.browser, and start's auto default on Linux) makes the
+// process model moot.
 func TestSiteIsolation_CrossSiteIframeIsItsOwnTarget(t *testing.T) {
-	page, cleanup := isolationFixturePage(t, newStartLauncher(startLaunch{
-		dataDir:     t.TempDir(),
-		headless:    true,
-		unsandboxed: true,
-	}))
-	defer cleanup()
-
-	got := waitIframeTargets(t, page.Browser())
-	if len(got) != 1 || !strings.Contains(got[0], "/isolation/child") {
-		t.Errorf("iframe targets = %q, want one for the cross-site child", got)
-	}
+	assertIsolation(t, isolationLauncher(t), true)
 }
 
-// The control for the test above: rod's two defaults put back on the launcher
-// roddy ships, driving the same fixture. Without it the assertion would pass
-// just as well on a fixture whose iframe never loaded.
-func TestSiteIsolation_RodDefaultsKeepTheIframeInProcess(t *testing.T) {
-	l := newStartLauncher(startLaunch{dataDir: t.TempDir(), headless: true, unsandboxed: true}).
-		Set("disable-site-isolation-trials").
-		Append("disable-features", "site-per-process")
+// The control for the test above: --disable-site-isolation-trials, the rod
+// default that does the disabling here, put back on the launcher roddy ships.
+// Its "no iframe target" assertion would pass just as well on an iframe that
+// never loaded, so the frame-tree check proves the load first.
+func TestSiteIsolation_TrialsFlagAloneTurnsItOff(t *testing.T) {
+	assertIsolation(t, isolationLauncher(t).Set("disable-site-isolation-trials"), false)
+}
+
+// rod's other default, disable-features=site-per-process, is inert: Chromium
+// 128 spells the feature SitePerProcess, so the lowercase value matches nothing
+// and isolation stays on. A Chromium that honours it fails this test — that is
+// the point, the CLAUDE.md fact then has to be revisited.
+func TestSiteIsolation_RodsSitePerProcessSpellingIsInert(t *testing.T) {
+	assertIsolation(t, isolationLauncher(t).Append("disable-features", "site-per-process"), true)
+}
+
+// isolationLauncher is what roddy ships for an unsandboxed multi-process start;
+// the tests above differ only in the flags they put back and what they expect.
+func isolationLauncher(t *testing.T) *launcher.Launcher {
+	t.Helper()
+	return newStartLauncher(startLaunch{dataDir: t.TempDir(), headless: true, unsandboxed: true})
+}
+
+// assertIsolation drives the cross-site iframe fixture on l and asserts whether
+// Site Isolation is on: an OOPIF is a browser-level target of type "iframe" and
+// is absent from the parent's frame tree, an in-process child the mirror image.
+func assertIsolation(t *testing.T, l *launcher.Launcher, want bool) {
+	t.Helper()
 	page, cleanup := isolationFixturePage(t, l)
 	defer cleanup()
 
-	// An in-process child shows in the parent's frame tree where an OOPIF does
-	// not, so this is the proof the iframe loaded at all.
-	if got := waitChildFrames(t, page); len(got) != 1 || !strings.Contains(got[0], "/isolation/child") {
-		t.Fatalf("child frames = %q, want the fixture's iframe", got)
+	if !want {
+		// An in-process child shows in the parent's frame tree where an OOPIF
+		// does not, so this is the proof the iframe loaded at all.
+		if got := waitChildFrames(t, page); len(got) != 1 || !strings.Contains(got[0], "/isolation/child") {
+			t.Fatalf("child frames = %q, want the fixture's iframe", got)
+		}
+		if got := iframeTargets(t, page.Browser()); len(got) > 0 {
+			t.Errorf("iframe targets = %q, want none with site isolation off", got)
+		}
+		return
 	}
-	if got := iframeTargets(t, page.Browser()); len(got) > 0 {
-		t.Errorf("iframe targets = %q, want none with site isolation off", got)
+	if got := waitIframeTargets(t, page.Browser()); len(got) != 1 || !strings.Contains(got[0], "/isolation/child") {
+		// The frame tree tells the two ways this fails apart: a child listed
+		// there is an in-process iframe (isolation off), no child at all is a
+		// fixture that never loaded one.
+		t.Errorf("iframe targets = %q, want one for the cross-site child; child frames = %q",
+			got, childFrames(t, page))
 	}
 }
 
@@ -1895,20 +1916,26 @@ func waitIframeTargets(t *testing.T, b *rod.Browser) []string {
 	}
 }
 
+// childFrames returns the URLs of the page's in-process child frames.
+func childFrames(t *testing.T, p *rod.Page) []string {
+	t.Helper()
+	tree, err := proto.PageGetFrameTree{}.Call(p)
+	if err != nil {
+		t.Fatalf("get frame tree: %v", err)
+	}
+	var urls []string
+	for _, child := range tree.FrameTree.ChildFrames {
+		urls = append(urls, child.Frame.URL)
+	}
+	return urls
+}
+
 // waitChildFrames polls the parent's frame tree for up to 5s.
 func waitChildFrames(t *testing.T, p *rod.Page) []string {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		tree, err := proto.PageGetFrameTree{}.Call(p)
-		if err != nil {
-			t.Fatalf("get frame tree: %v", err)
-		}
-		var urls []string
-		for _, child := range tree.FrameTree.ChildFrames {
-			urls = append(urls, child.Frame.URL)
-		}
-		if len(urls) > 0 || time.Now().After(deadline) {
+		if urls := childFrames(t, p); len(urls) > 0 || time.Now().After(deadline) {
 			return urls
 		}
 		time.Sleep(25 * time.Millisecond)

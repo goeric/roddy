@@ -62,13 +62,15 @@ func TestConfigureExperiments_LeavesRoomForLaterAppends(t *testing.T) {
 	}
 }
 
-// launcher.New() turns Site Isolation off twice; both have to go, and the rest
-// of --disable-features has to survive.
+// launcher.New() sets two Site Isolation flags; both have to go — the trials
+// one because it is what disables isolation on the pinned Chromium, the other
+// for a ROD_CHROME_BIN browser that honours it — and the rest of
+// --disable-features has to survive.
 func TestConfigureSiteIsolation_UndoesBothRodDefaults(t *testing.T) {
 	l := configureSiteIsolation(launcher.New())
 
 	if l.Has("disable-site-isolation-trials") {
-		t.Error("--disable-site-isolation-trials survived; it disables site isolation on its own")
+		t.Error("--disable-site-isolation-trials survived; it disables site isolation")
 	}
 	got := features(l)
 	if strings.Contains(got, "site-per-process") {

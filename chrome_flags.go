@@ -54,18 +54,17 @@ func configureExperiments(l *launcher.Launcher) *launcher.Launcher {
 
 // configureSiteIsolation puts Chromium's Site Isolation back.
 //
-// launcher.New() turns it off twice — "disable-features": {"site-per-process",
-// ...} and --disable-site-isolation-trials, either of which is enough on its
-// own — carrying puppeteer's 2018 OOPIF workaround forward
-// (puppeteer/puppeteer#2548). The renderer sandbox is the primary boundary and
-// roddy keeps it on, but with site isolation off one renderer process hosts
-// documents from several sites, so a renderer that is compromised anyway reads
-// them all: the second layer is worth the process.
+// launcher.New() sets --disable-site-isolation-trials, which turns it off, and
+// lists "site-per-process" in disable-features (puppeteer's 2018 OOPIF
+// workaround, puppeteer/puppeteer#2548) — inert on the pinned Chromium 128,
+// whose feature is spelled SitePerProcess, but filtered out anyway for a
+// ROD_CHROME_BIN browser of another vintage. With isolation off one renderer
+// hosts documents from several sites, so a compromised renderer reads them all.
 //
 // disable-features is filtered rather than rewritten because
 // configureExperiments and configureExtensions append values of their own; the
-// order the three run in must not matter. --single-process makes the process
-// model moot, and needs nothing here.
+// order the three run in must not matter. --single-process leaves one process
+// regardless.
 func configureSiteIsolation(l *launcher.Launcher) *launcher.Launcher {
 	l = l.Delete("disable-site-isolation-trials")
 
@@ -80,7 +79,8 @@ func configureSiteIsolation(l *launcher.Launcher) *launcher.Launcher {
 		}
 	}
 	if len(kept) == 0 {
-		// An empty value would reach Chrome as "--disable-features=".
+		// A non-nil empty slice reaches Chrome as "--disable-features="
+		// (FormatArgs joins any non-nil value).
 		return l.Delete("disable-features")
 	}
 	return l.Set("disable-features", kept...)
