@@ -1460,6 +1460,17 @@ func TestNewStartLauncher_InsecureIgnoresCertErrors(t *testing.T) {
 	}
 }
 
+// The two flags are independent: --insecure behind a proxy sets both.
+func TestNewStartLauncher_InsecureWithProxy(t *testing.T) {
+	l := newStartLauncher(t.TempDir(), true, false, nil, 9222, true)
+	if !l.Has("ignore-certificate-errors") {
+		t.Error("--ignore-certificate-errors missing from a proxied --insecure launch")
+	}
+	if got, want := l.Get("proxy-server"), "http://127.0.0.1:9222"; got != want {
+		t.Errorf("proxy-server = %q, want %q", got, want)
+	}
+}
+
 // TestSandboxedLaunch is the test that matters for the sandbox default: a
 // plain start must come up with Chrome's sandbox intact and still drive a
 // page. Environments whose kernel cannot sandbox Chrome — root, containers,
@@ -1826,6 +1837,123 @@ func TestProxyLogPath_LivesInStateDir(t *testing.T) {
 	}
 }
 
+// A state file that outlived a reboot names a PID the system may have handed
+// to something else; the helper's port is what tells the two apart.
+func TestProxyHelperAlive(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	if !proxyHelperAlive(port) {
+		t.Errorf("proxyHelperAlive(%d) = false with a listener on it, want true", port)
+	}
+	if err := ln.Close(); err != nil {
+		t.Fatalf("close listener: %v", err)
+	}
+	if proxyHelperAlive(port) {
+		t.Errorf("proxyHelperAlive(%d) = true after the listener closed, want false", port)
+	}
+	if proxyHelperAlive(0) {
+		t.Error("proxyHelperAlive(0) = true, want false: no helper was recorded")
+	}
+}
+
+// freePort returns a port nothing listens on, for the upstream-unreachable
+// paths.
+func freePort(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := ln.Addr().String()
+	if err := ln.Close(); err != nil {
+		t.Fatalf("close listener: %v", err)
+	}
+	return addr
+}
+
+// Chrome renders every synthesized 502 as ERR_TUNNEL_CONNECTION_FAILED, and
+// open sends the user to proxy.log for the cause: an unlogged failure leaves
+// that log empty. The credential must not go with it.
+func TestProxyConnect_LogsRejectedConnect(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	served := make(chan struct{})
+	go func() {
+		defer close(served)
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		if _, err := conn.Read(make([]byte, 4096)); err != nil {
+			return
+		}
+		_, _ = conn.Write([]byte("HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"x\"\r\n\r\n"))
+	}()
+
+	var logged bytes.Buffer
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodConnect, "example.com:443", nil)
+	credential := base64.StdEncoding.EncodeToString([]byte("user:secret"))
+	proxyConnect(rec, req, ln.Addr().String(), "Basic "+credential, log.New(&logged, "", 0))
+	<-served
+
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadGateway)
+	}
+	out := logged.String()
+	if !strings.Contains(out, "example.com:443") || !strings.Contains(out, "407") {
+		t.Errorf("log = %q, want the host and the upstream status line", out)
+	}
+	if strings.Contains(out, credential) || strings.Contains(out, "secret") {
+		t.Errorf("log = %q, want no credential in it", out)
+	}
+}
+
+func TestProxyConnect_LogsDialFailure(t *testing.T) {
+	upstream := freePort(t)
+	var logged bytes.Buffer
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodConnect, "example.com:443", nil)
+	proxyConnect(rec, req, upstream, "Basic secret", log.New(&logged, "", 0))
+
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadGateway)
+	}
+	out := logged.String()
+	if !strings.Contains(out, "example.com:443") || !strings.Contains(out, upstream) || !strings.Contains(out, "dial") {
+		t.Errorf("log = %q, want the host, the upstream %s and the failure kind", out, upstream)
+	}
+	if strings.Contains(out, "secret") {
+		t.Errorf("log = %q, want no credential in it", out)
+	}
+}
+
+func TestProxyHTTP_LogsUpstreamFailure(t *testing.T) {
+	upstream := freePort(t)
+	var logged bytes.Buffer
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/page", nil)
+	proxyHTTP(rec, req, upstream, "Basic secret", log.New(&logged, "", 0))
+
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadGateway)
+	}
+	out := logged.String()
+	if !strings.Contains(out, "example.com") || !strings.Contains(out, upstream) {
+		t.Errorf("log = %q, want the host and the upstream %s", out, upstream)
+	}
+	if strings.Contains(out, "secret") {
+		t.Errorf("log = %q, want no credential in it", out)
+	}
+}
+
 func TestProxyHelperFailure_InlinesTheHelperOutput(t *testing.T) {
 	logPath := filepath.Join(t.TempDir(), "proxy.log")
 	if err := os.WriteFile(logPath, []byte("error: proxy listen failed: address already in use\nsecond line\n"), 0600); err != nil {
@@ -1908,96 +2036,166 @@ func TestInsecureFlag_WithSelfSignedCert(t *testing.T) {
 	httpsServer.StartTLS()
 	defer httpsServer.Close()
 
-	// Test 1: Browser WITHOUT --ignore-certificate-errors should fail
+	// Test 1: the CLI's own launcher without --insecure should fail
 	t.Run("WithoutInsecureFlag", func(t *testing.T) {
-		l := launcher.New().
-			Set("no-sandbox").
-			Set("disable-gpu").
-			Set("single-process").
-			Headless(true).
-			Leakless(false)
-
-		if bin := os.Getenv("ROD_CHROME_BIN"); bin != "" {
-			l = l.Bin(bin)
-		}
-
-		u := l.MustLaunch()
-		browser := rod.New().ControlURL(u).MustConnect()
-		defer browser.MustClose()
-
-		page := browser.MustPage("")
-		defer page.MustClose()
+		page, cleanup := startLauncherPage(t, false)
+		defer cleanup()
 
 		err := page.Navigate(httpsServer.URL)
 		if err == nil {
 			t.Fatal("expected ERR_CERT_AUTHORITY_INVALID error, but navigation succeeded")
 		}
 		if !strings.Contains(err.Error(), "ERR_CERT_AUTHORITY_INVALID") {
-			t.Errorf("expected ERR_CERT_AUTHORITY_INVALID, got: %v", err)
+			t.Fatalf("expected ERR_CERT_AUTHORITY_INVALID, got: %v", err)
+		}
+		// The message open prints, formatted from the real rod error.
+		msg := navigationFailure(err, &State{ChromePID: 1})
+		if strings.Count(msg, "navigation failed: ") != 1 {
+			t.Errorf("navigationFailure = %q, want the prefix exactly once", msg)
+		}
+		if !strings.Contains(msg, "install its CA") || !strings.Contains(msg, "roddy start --insecure") {
+			t.Errorf("navigationFailure = %q, want the CA / --insecure hint", msg)
 		}
 	})
 
-	// Test 2: Browser WITH --ignore-certificate-errors should succeed
+	// Test 2: the same launcher with --insecure should succeed
 	t.Run("WithInsecureFlag", func(t *testing.T) {
-		l := launcher.New().
-			Set("no-sandbox").
-			Set("disable-gpu").
-			Set("single-process").
-			Set("ignore-certificate-errors"). // This is what --insecure sets
-			Headless(true).
-			Leakless(false)
+		page, cleanup := startLauncherPage(t, true)
+		defer cleanup()
 
-		if bin := os.Getenv("ROD_CHROME_BIN"); bin != "" {
-			l = l.Bin(bin)
+		if err := page.Navigate(httpsServer.URL); err != nil {
+			t.Fatalf("navigation with --insecure failed: %v", err)
 		}
-
-		u := l.MustLaunch()
-		browser := rod.New().ControlURL(u).MustConnect()
-		defer browser.MustClose()
-
-		// Try to navigate to HTTPS server with invalid cert
-		page := browser.MustPage(httpsServer.URL)
-		defer page.MustClose()
-
-		page.MustWaitLoad()
-		title := page.MustInfo().Title
-
-		if title != "Secure Test" {
-			t.Errorf("expected page to load successfully with title 'Secure Test', got %q", title)
+		if err := page.WaitLoad(); err != nil {
+			t.Fatalf("wait for load: %v", err)
+		}
+		info, err := page.Info()
+		if err != nil {
+			t.Fatalf("page info: %v", err)
+		}
+		if info.Title != "Secure Test" {
+			t.Errorf("expected page to load successfully with title 'Secure Test', got %q", info.Title)
 		}
 	})
+}
+
+// startLauncherPage launches Chrome the way start does — unsandboxed, so it
+// runs wherever the suite does — and returns a blank page plus the teardown
+// Leakless(false) makes mandatory: an unwaited Chrome races t.TempDir cleanup.
+func startLauncherPage(t *testing.T, ignoreCertErrors bool) (*rod.Page, func()) {
+	t.Helper()
+	l := newStartLauncher(t.TempDir(), true, true, nil, 0, ignoreCertErrors)
+	u, err := l.Launch()
+	if err != nil {
+		t.Fatalf("launch: %v", err)
+	}
+	stop := func() {
+		l.Kill()
+		waitProcessGone(t, l.PID())
+	}
+	browser := rod.New().ControlURL(u)
+	if err := browser.Connect(); err != nil {
+		stop()
+		t.Fatalf("connect: %v", err)
+	}
+	page, err := browser.Page(proto.TargetCreateTarget{})
+	if err != nil {
+		stop()
+		t.Fatalf("open a page: %v", err)
+	}
+	return page, func() {
+		if err := browser.Close(); err != nil {
+			l.Kill()
+		}
+		waitProcessGone(t, l.PID())
+	}
 }
 
 // --- navigationFailure ---
 
+// ownSession is what open works with unless the user attached with connect.
+var ownSession = &State{ChromePID: 4242}
+
 func TestNavigationFailure_CertErrorCarriesTheHint(t *testing.T) {
-	msg := navigationFailure(errors.New("net::ERR_CERT_AUTHORITY_INVALID"))
+	msg := navigationFailure(errors.New("net::ERR_CERT_AUTHORITY_INVALID"), ownSession)
 	if !strings.HasPrefix(msg, "navigation failed: net::ERR_CERT_AUTHORITY_INVALID") {
 		t.Errorf("navigationFailure = %q, want it to lead with the plain message", msg)
 	}
-	if !strings.Contains(msg, "CA") || !strings.Contains(msg, "roddy start --insecure") {
+	if !strings.Contains(msg, "install its CA") || !strings.Contains(msg, "roddy start --insecure") {
 		t.Errorf("navigationFailure = %q, want the CA / --insecure hint", msg)
 	}
 }
 
-func TestNavigationFailure_SSLErrorCarriesTheHint(t *testing.T) {
-	msg := navigationFailure(errors.New("net::ERR_SSL_PROTOCOL_ERROR"))
-	if !strings.Contains(msg, "roddy start --insecure") {
-		t.Errorf("navigationFailure = %q, want the CA / --insecure hint", msg)
+// --ignore-certificate-errors bypasses Chromium's IsCertificateError set: the
+// ERR_CERT* range plus ERR_SSL_PINNED_KEY_NOT_IN_CERT_CHAIN. The rest of
+// ERR_SSL_* are handshake failures neither fix touches — hinting there sent
+// the user to an --insecure session that failed with the same advice.
+func TestNavigationFailure_HintFollowsChromesCertErrorSet(t *testing.T) {
+	cases := []struct {
+		text string
+		want bool
+	}{
+		{"net::ERR_CERT_AUTHORITY_INVALID", true},
+		{"net::ERR_CERT_COMMON_NAME_INVALID", true},
+		{"net::ERR_CERTIFICATE_TRANSPARENCY_REQUIRED", true},
+		{"net::ERR_SSL_PINNED_KEY_NOT_IN_CERT_CHAIN", true},
+		{"net::ERR_SSL_PROTOCOL_ERROR", false},
+		{"net::ERR_SSL_VERSION_OR_CIPHER_MISMATCH", false},
+		{"net::ERR_SSL_CLIENT_AUTH_CERT_NEEDED", false},
+		{"net::ERR_NAME_NOT_RESOLVED", false},
+	}
+	for _, c := range cases {
+		msg := navigationFailure(errors.New(c.text), ownSession)
+		if got := strings.Contains(msg, "install its CA"); got != c.want {
+			t.Errorf("navigationFailure(%q) = %q, hinted = %v, want %v", c.text, msg, got, c.want)
+		}
+		if !c.want {
+			if want := "navigation failed: " + c.text; msg != want {
+				t.Errorf("navigationFailure(%q) = %q, want %q", c.text, msg, want)
+			}
+		}
 	}
 }
 
-func TestNavigationFailure_UnrelatedErrorIsUnchanged(t *testing.T) {
-	msg := navigationFailure(errors.New("net::ERR_NAME_NOT_RESOLVED"))
-	if want := "navigation failed: net::ERR_NAME_NOT_RESOLVED"; msg != want {
-		t.Errorf("navigationFailure = %q, want %q", msg, want)
+// connect attached to a Chrome roddy does not own: `start --insecure` would
+// launch a second one instead of relaunching it.
+func TestNavigationFailure_ConnectSessionCannotBeRestarted(t *testing.T) {
+	msg := navigationFailure(errors.New("net::ERR_CERT_AUTHORITY_INVALID"), &State{ChromePID: 0})
+	if strings.Contains(msg, "roddy start --insecure") {
+		t.Errorf("navigationFailure = %q, want no restart advice for a connect session", msg)
+	}
+	if !strings.Contains(msg, "install its CA") || !strings.Contains(msg, "--ignore-certificate-errors") {
+		t.Errorf("navigationFailure = %q, want the CA / --ignore-certificate-errors hint", msg)
+	}
+}
+
+// The session already ignores certificate errors, so nothing --insecure does
+// is left to suggest.
+func TestNavigationFailure_InsecureSessionGetsNoInsecureAdvice(t *testing.T) {
+	msg := navigationFailure(errors.New("net::ERR_CERT_AUTHORITY_INVALID"), &State{ChromePID: 4242, Insecure: true})
+	if strings.Contains(msg, "--insecure") {
+		t.Errorf("navigationFailure = %q, want no --insecure advice for an insecure session", msg)
+	}
+}
+
+func TestNavigationFailure_TunnelFailureNamesTheProxyLog(t *testing.T) {
+	t.Setenv("RODDY_HOME", t.TempDir())
+	for _, text := range []string{"net::ERR_TUNNEL_CONNECTION_FAILED", "net::ERR_PROXY_CONNECTION_FAILED"} {
+		msg := navigationFailure(errors.New(text), &State{ChromePID: 4242, ProxyPID: 99, ProxyPort: 1234})
+		if !strings.Contains(msg, "upstream proxy") || !strings.Contains(msg, proxyLogPath()) {
+			t.Errorf("navigationFailure(%q) = %q, want the helper hint naming %s", text, msg, proxyLogPath())
+		}
+		// No helper, no helper log to blame.
+		if got, want := navigationFailure(errors.New(text), ownSession), "navigation failed: "+text; got != want {
+			t.Errorf("navigationFailure(%q) without a proxy helper = %q, want %q", text, got, want)
+		}
 	}
 }
 
 // rod's NavigationError already carries the prefix; adding it again printed
 // "navigation failed: navigation failed: net::ERR_…".
 func TestNavigationFailure_RodErrorKeepsOnePrefix(t *testing.T) {
-	msg := navigationFailure(&rod.NavigationError{Reason: "net::ERR_CERT_AUTHORITY_INVALID"})
+	msg := navigationFailure(&rod.NavigationError{Reason: "net::ERR_CERT_AUTHORITY_INVALID"}, ownSession)
 	if !strings.HasPrefix(msg, "navigation failed: net::ERR_CERT_AUTHORITY_INVALID") {
 		t.Errorf("navigationFailure = %q, want it to lead with the plain message", msg)
 	}
@@ -2006,6 +2204,26 @@ func TestNavigationFailure_RodErrorKeepsOnePrefix(t *testing.T) {
 	}
 	if !strings.Contains(msg, "roddy start --insecure") {
 		t.Errorf("navigationFailure = %q, want the CA / --insecure hint", msg)
+	}
+}
+
+// --- sessionFlagNotes ---
+
+func TestSessionFlagNotes(t *testing.T) {
+	cases := []struct {
+		name  string
+		state State
+		want  string
+	}{
+		{"default", State{}, ""},
+		{"unsandboxed", State{Unsandboxed: true}, "sandbox off"},
+		{"insecure", State{Insecure: true}, "certificate errors ignored"},
+		{"both", State{Unsandboxed: true, Insecure: true}, "sandbox off, certificate errors ignored"},
+	}
+	for _, c := range cases {
+		if got := sessionFlagNotes(&c.state); got != c.want {
+			t.Errorf("sessionFlagNotes(%s) = %q, want %q", c.name, got, c.want)
+		}
 	}
 }
 

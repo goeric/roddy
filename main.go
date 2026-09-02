@@ -10,6 +10,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -96,8 +97,24 @@ type State struct {
 	ProxyPort  int    `json:"proxy_port,omitempty"` // local port of auth proxy
 
 	Unsandboxed bool `json:"unsandboxed,omitempty"` // Chrome launched with --no-sandbox
+	Insecure    bool `json:"insecure,omitempty"`    // Chrome launched with --ignore-certificate-errors
 
 	Extensions []extensionInfo `json:"extensions,omitempty"` // extensions passed to --load-extension
+}
+
+// sessionFlagNotes names the launch flags that outlive start, for start's
+// "Chrome started" line and status. Nothing for a default session: state files
+// written before a field existed decode as false, and naming the opposite
+// ("sandbox on") would be a guess there.
+func sessionFlagNotes(s *State) string {
+	var notes []string
+	if s.Unsandboxed {
+		notes = append(notes, "sandbox off")
+	}
+	if s.Insecure {
+		notes = append(notes, "certificate errors ignored")
+	}
+	return strings.Join(notes, ", ")
 }
 
 func stateDir() string {
@@ -600,13 +617,13 @@ func newStartLauncher(dataDir string, headless, unsandboxed bool, extensions []e
 	l = configureExtensions(l, headless, extensions)
 
 	if proxyPort > 0 {
-		l.Set("proxy-server", fmt.Sprintf("http://127.0.0.1:%d", proxyPort))
+		l = l.Set("proxy-server", fmt.Sprintf("http://127.0.0.1:%d", proxyPort))
 	}
-	// Only --insecure sets this: the proxy helper is a transparent CONNECT
-	// tunnel and originates no cert error, and the flag would drop TLS
-	// validation for every page in the session.
+	// Not implied by proxyPort: the helper is a transparent CONNECT tunnel and
+	// originates no cert error, and this flag drops TLS validation for every
+	// page in the session.
 	if ignoreCertErrors {
-		l.Set("ignore-certificate-errors")
+		l = l.Set("ignore-certificate-errors")
 	}
 
 	if bin := os.Getenv("ROD_CHROME_BIN"); bin != "" {
@@ -640,9 +657,14 @@ func cmdStart(args []string) {
 	// Check if already running
 	if s, err := loadState(); err == nil {
 		// Quietly, as stop does. An old helper still holds a descriptor on
-		// proxy.log, which this start truncates: its later writes would punch
-		// holes in the log this start reports from.
-		signalPID(s.ProxyPID)
+		// proxy.log, which this start truncates, and its later writes would
+		// punch holes in the log this start reports from: SIGTERM first, and
+		// it normally exits before the truncate below. Only while its port
+		// still accepts — a state file that outlived a reboot can name a PID
+		// the system recycled.
+		if proxyHelperAlive(s.ProxyPort) {
+			signalPID(s.ProxyPID)
+		}
 		// Try connecting
 		if b, err := connectBrowser(s); err == nil {
 			// Best effort: a half-dead old browser must not block starting a
@@ -762,6 +784,7 @@ func cmdStart(args []string) {
 		ProxyPort:   proxyPort,
 		Extensions:  extensions,
 		Unsandboxed: unsandboxed,
+		Insecure:    opts.ignoreCertErrors,
 	}
 
 	if err := saveState(state); err != nil {
@@ -775,8 +798,8 @@ func cmdStart(args []string) {
 		fatal("failed to save state: %v", err)
 	}
 
-	if unsandboxed {
-		fmt.Printf("Chrome started (PID %d, sandbox off)\n", pid)
+	if notes := sessionFlagNotes(state); notes != "" {
+		fmt.Printf("Chrome started (PID %d, %s)\n", pid, notes)
 	} else {
 		fmt.Printf("Chrome started (PID %d)\n", pid)
 	}
@@ -906,10 +929,8 @@ func cmdStatus(args []string) {
 	fmt.Printf("Debug URL: %s\n", s.DebugURL)
 	fmt.Printf("Pages: %d\n", len(pages))
 	fmt.Printf("Active page: %d\n", s.ActivePage)
-	if s.Unsandboxed {
-		// Nothing when sandboxed: state files written before the field existed
-		// decode as false, and "Sandbox: on" would be a guess there.
-		fmt.Println("Sandbox: off")
+	if notes := sessionFlagNotes(s); notes != "" {
+		fmt.Printf("Session: %s\n", notes)
 	}
 	for _, ext := range s.Extensions {
 		fmt.Printf("Extension: %s (%s)\n", ext.Name, ext.ID)
@@ -940,19 +961,45 @@ func normalizeOpenURL(url string) string {
 	return "http://" + url
 }
 
-// navigationFailure formats a failed navigation, adding what to do about
-// Chrome's "net::ERR_CERT_*" / "net::ERR_SSL_*" errorText: roddy's own proxy
-// helper never terminates TLS, so those come from the server's certificate or
-// from an upstream proxy that re-signs with its own CA. A *rod.NavigationError
-// already reads "navigation failed: net::ERR_…", so the prefix is added only
-// to errors that lack it.
-func navigationFailure(err error) string {
-	msg := err.Error()
-	if !strings.HasPrefix(msg, "navigation failed: ") {
-		msg = "navigation failed: " + msg
+// isCertErrorText reports whether Chrome's error text names one of the errors
+// --ignore-certificate-errors bypasses: Chromium's IsCertificateError is the
+// ERR_CERT* range plus ERR_SSL_PINNED_KEY_NOT_IN_CERT_CHAIN.
+func isCertErrorText(msg string) bool {
+	return strings.Contains(msg, "ERR_CERT") ||
+		strings.Contains(msg, "ERR_SSL_PINNED_KEY_NOT_IN_CERT_CHAIN")
+}
+
+// navigationFailure formats a failed navigation. Chrome's certificate errors
+// ("net::ERR_CERT*" and ERR_SSL_PINNED_KEY_NOT_IN_CERT_CHAIN — the set
+// --ignore-certificate-errors bypasses; other ERR_SSL_* are handshake failures
+// neither fix touches) get the two fixes appended: roddy's own proxy helper
+// never terminates TLS, so the certificate is the server's or a TLS-inspecting
+// proxy's. Which fixes depends on the session: --insecure relaunches only a
+// Chrome roddy owns (ChromePID 0 is a connect session), and a session already
+// launched with the flag has no trust problem left for it to fix. A
+// *rod.NavigationError already reads "navigation failed: net::ERR_…", so the
+// prefix goes on its Reason rather than on its message.
+func navigationFailure(err error, s *State) string {
+	msg := "navigation failed: "
+	var navErr *rod.NavigationError
+	if errors.As(err, &navErr) {
+		msg += navErr.Reason
+	} else {
+		msg += err.Error()
 	}
-	if strings.Contains(msg, "ERR_CERT_") || strings.Contains(msg, "ERR_SSL_") {
-		msg += "; for a self-signed or TLS-inspecting-proxy certificate, install its CA for Chrome or restart with `roddy start --insecure`"
+	if isCertErrorText(msg) {
+		switch {
+		case s.Insecure:
+			msg += "; this session already ignores certificate errors, so Chrome refused this certificate on its own"
+		case s.ChromePID == 0:
+			msg += "; for a self-signed or TLS-inspecting-proxy certificate, install its CA for Chrome or relaunch that Chrome with --ignore-certificate-errors (roddy did not start it)"
+		default:
+			msg += "; for a self-signed or TLS-inspecting-proxy certificate, install its CA for Chrome or restart with `roddy start --insecure`"
+		}
+	}
+	if s.ProxyPID > 0 && (strings.Contains(msg, "ERR_TUNNEL_CONNECTION_FAILED") ||
+		strings.Contains(msg, "ERR_PROXY_CONNECTION_FAILED")) {
+		msg += "; the proxy helper could not reach the upstream proxy — see " + proxyLogPath()
 	}
 	return msg
 }
@@ -978,7 +1025,7 @@ func cmdOpen(args []string) {
 	if len(pages) == 0 {
 		page, err = browser.Page(proto.TargetCreateTarget{URL: url})
 		if err != nil {
-			fatal("%s", navigationFailure(err))
+			fatal("%s", navigationFailure(err, s))
 		}
 		s.ActivePage = 0
 		if err := saveState(s); err != nil {
@@ -990,7 +1037,7 @@ func cmdOpen(args []string) {
 			fatal("%v", err)
 		}
 		if err := page.Navigate(url); err != nil {
-			fatal("%s", navigationFailure(err))
+			fatal("%s", navigationFailure(err, s))
 		}
 	}
 	waitLoaded(page)
@@ -1725,7 +1772,7 @@ func cmdNewPage(args []string) {
 	// An empty URL opens a blank page.
 	page, err := browser.Page(proto.TargetCreateTarget{URL: url})
 	if err != nil {
-		fatal("failed to open page: %v", err)
+		fatal("%s", navigationFailure(err, s))
 	}
 	if url != "" {
 		waitLoaded(page)
@@ -2322,6 +2369,21 @@ func proxyLogPath() string {
 	return filepath.Join(stateDir(), "proxy.log")
 }
 
+// proxyHelperAlive reports whether a helper still listens on the port a state
+// file names — the only evidence that its recorded PID is still that helper's
+// and not a PID the system recycled across a reboot.
+func proxyHelperAlive(port int) bool {
+	if port <= 0 {
+		return false
+	}
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 200*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
+}
+
 // proxyLogInlineLines caps how much of the log a failure message inlines.
 const proxyLogInlineLines = 5
 
@@ -2443,12 +2505,15 @@ func runProxyHelper(ctx context.Context, upstream string, stdin io.Reader, annou
 	// authHeader is written before Serve starts and read only by handlers,
 	// which Serve starts after it.
 	var authHeader string
+	// The helper's stderr is proxy.log, which open's tunnel-failure hint sends
+	// the user to: an upstream failure that logs nothing leaves it empty.
+	logger := log.New(os.Stderr, "", log.LstdFlags)
 	server := &http.Server{
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Method == http.MethodConnect {
-				proxyConnect(w, r, upstream, authHeader)
+				proxyConnect(w, r, upstream, authHeader, logger)
 			} else {
-				proxyHTTP(w, r, upstream, authHeader)
+				proxyHTTP(w, r, upstream, authHeader, logger)
 			}
 		}),
 	}
@@ -2495,9 +2560,16 @@ func cmdInternalProxy(args []string) {
 	}
 }
 
-func proxyConnect(w http.ResponseWriter, r *http.Request, upstream, authHeader string) {
+// proxyConnect tunnels one CONNECT through the upstream proxy. Every failure
+// is logged as well as answered: Chrome reports the synthesized 502 as
+// "net::ERR_TUNNEL_CONNECTION_FAILED" whatever went wrong, so the log line is
+// the only place the cause survives. The Proxy-Authorization header never goes
+// into it — a rejected CONNECT is logged by its status line ("407" means the
+// credentials were refused).
+func proxyConnect(w http.ResponseWriter, r *http.Request, upstream, authHeader string, logger *log.Logger) {
 	upstreamConn, err := net.DialTimeout("tcp", upstream, 30*time.Second)
 	if err != nil {
+		logger.Printf("CONNECT %s: dialing upstream proxy %s failed: %v", r.Host, upstream, err)
 		http.Error(w, "upstream dial failed", http.StatusBadGateway)
 		return
 	}
@@ -2506,6 +2578,7 @@ func proxyConnect(w http.ResponseWriter, r *http.Request, upstream, authHeader s
 		r.Host, r.Host, authHeader)
 	if _, err := upstreamConn.Write([]byte(connectReq)); err != nil {
 		upstreamConn.Close()
+		logger.Printf("CONNECT %s: writing to upstream proxy %s failed: %v", r.Host, upstream, err)
 		http.Error(w, "upstream write failed", http.StatusBadGateway)
 		return
 	}
@@ -2514,12 +2587,16 @@ func proxyConnect(w http.ResponseWriter, r *http.Request, upstream, authHeader s
 	n, err := upstreamConn.Read(buf)
 	if err != nil {
 		upstreamConn.Close()
+		logger.Printf("CONNECT %s: reading the upstream proxy's reply failed: %v", r.Host, err)
 		http.Error(w, "upstream read failed", http.StatusBadGateway)
 		return
 	}
 	response := string(buf[:n])
 	if len(response) < 12 || response[9:12] != "200" {
 		upstreamConn.Close()
+		// Only the status line: the rest of the reply is headers.
+		status, _, _ := strings.Cut(response, "\r\n")
+		logger.Printf("CONNECT %s: upstream proxy rejected CONNECT: %q", r.Host, strings.TrimSpace(status))
 		http.Error(w, "upstream rejected CONNECT", http.StatusBadGateway)
 		return
 	}
@@ -2527,12 +2604,14 @@ func proxyConnect(w http.ResponseWriter, r *http.Request, upstream, authHeader s
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {
 		upstreamConn.Close()
+		logger.Printf("CONNECT %s: hijack not supported", r.Host)
 		http.Error(w, "hijack not supported", http.StatusInternalServerError)
 		return
 	}
 	clientConn, _, err := hijacker.Hijack()
 	if err != nil {
 		upstreamConn.Close()
+		logger.Printf("CONNECT %s: hijack failed: %v", r.Host, err)
 		return
 	}
 
@@ -2548,7 +2627,7 @@ func proxyConnect(w http.ResponseWriter, r *http.Request, upstream, authHeader s
 	}()
 }
 
-func proxyHTTP(w http.ResponseWriter, r *http.Request, upstream, authHeader string) {
+func proxyHTTP(w http.ResponseWriter, r *http.Request, upstream, authHeader string, logger *log.Logger) {
 	proxyURL, _ := url.Parse("http://" + upstream)
 	transport := &http.Transport{
 		Proxy: http.ProxyURL(proxyURL),
@@ -2560,6 +2639,7 @@ func proxyHTTP(w http.ResponseWriter, r *http.Request, upstream, authHeader stri
 
 	resp, err := transport.RoundTrip(r)
 	if err != nil {
+		logger.Printf("%s %s: upstream proxy %s failed the request: %v", r.Method, r.Host, upstream, err)
 		http.Error(w, "upstream request failed", http.StatusBadGateway)
 		return
 	}

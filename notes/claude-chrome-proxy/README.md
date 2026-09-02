@@ -85,12 +85,15 @@ Target Server
 The `roddy` binary doubles as a proxy when invoked with the hidden `_proxy` subcommand:
 
 ```bash
-printf '%s\n' "$auth_header" | roddy _proxy <port> <upstream-host:port>
+printf '%s\n' "$auth_header" | roddy _proxy <upstream-host:port>
 ```
+
+The helper binds its own loopback port and announces it on stdout as one line.
 
 **Superseded:** the header used to be `argv[2]` — `ps` showed it to every user
 on the machine for the helper's whole lifetime. It now arrives as one line on
-stdin, and the old three-argument form is rejected.
+stdin, and the old three-argument form is rejected. The port used to be
+`argv[1]`; the caller no longer picks one.
 
 This is launched as a background process by `roddy start`. It runs in its own
 session (`Setsid: true`) so it survives after the parent exits. Its PID is stored
@@ -129,11 +132,11 @@ func proxyConnect(w http.ResponseWriter, r *http.Request, upstream, authHeader s
 ### Certificate errors
 
 Once the proxy tunnel is working, there's a secondary issue: `ERR_CERT_AUTHORITY_INVALID`.
-This happens because the proxy infrastructure may perform TLS inspection, or the
-container lacks certain root CAs — never because of the helper, which tunnels
-CONNECT without terminating TLS. `start` no longer adds
-`--ignore-certificate-errors` on the proxy path: install the inspecting proxy's
-CA where Chrome reads it, or launch with `roddy start --insecure`.
+It comes from the target's own certificate or from proxy infrastructure that
+inspects TLS and re-signs — never from the helper, which tunnels CONNECT
+without terminating TLS. `start` keeps certificate validation on the proxy
+path: install the inspecting proxy's CA where Chrome reads it, or launch with
+`roddy start --insecure`.
 
 ### Proxy detection
 
@@ -154,11 +157,11 @@ If no authenticated proxy is detected, Chrome launches normally without the help
 ```
 roddy start
   1. detectProxy() -> finds HTTPS_PROXY with auth
-  2. Find free port for local proxy
-  3. Launch: roddy _proxy <port> <upstream> (background, detached), then write
+  2. Launch: roddy _proxy <upstream> (background, detached), then write
      <authHeader> to its stdin
      Superseded: <authHeader> used to be a third argument, visible in ps.
-  4. Store proxy PID in state
+  3. Read the port the helper bound from its stdout
+  4. Store proxy PID and port in state
   5. Launch Chrome with --proxy-server=http://127.0.0.1:<port>
                         (--ignore-certificate-errors only with --insecure)
   6. Store Chrome PID and debug URL in state
