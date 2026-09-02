@@ -1,19 +1,23 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -1531,8 +1535,8 @@ func probeUnsandboxedLaunch(t testing.TB, dataDir string) error {
 // The property the stdin handoff exists for: argv carries no credential, since
 // ps shows it to every user on the machine for the helper's whole lifetime.
 func TestProxyHelperCommand_ArgvCarriesNoCredential(t *testing.T) {
-	cmd := proxyHelperCommand("/usr/local/bin/roddy", 4242, "proxy.example:8080")
-	want := []string{"/usr/local/bin/roddy", "_proxy", "4242", "proxy.example:8080"}
+	cmd := proxyHelperCommand("/usr/local/bin/roddy", "proxy.example:8080")
+	want := []string{"/usr/local/bin/roddy", "_proxy", "proxy.example:8080"}
 	if !reflect.DeepEqual(cmd.Args, want) {
 		t.Errorf("Args = %q, want %q", cmd.Args, want)
 	}
@@ -1582,6 +1586,288 @@ func TestReadProxyAuthHeader(t *testing.T) {
 	got, err = readProxyAuthHeader(&errAfterPartialRead{data: "Basic abc", err: broken})
 	if !errors.Is(err, broken) || got != "" {
 		t.Errorf("readProxyAuthHeader (partial + error) = %q, %v; want \"\", %v", got, err, broken)
+	}
+}
+
+func TestAwaitProxyPort_ReturnsTheAnnouncedPort(t *testing.T) {
+	r, w := announcePipe(t)
+	go func() { _, _ = io.WriteString(w, "12345\n") }()
+	port, err := awaitProxyPort(r, make(chan error), 5*time.Second)
+	if err != nil {
+		t.Fatalf("awaitProxyPort = %v, want port 12345", err)
+	}
+	if port != 12345 {
+		t.Errorf("port = %d, want 12345", port)
+	}
+}
+
+// A helper that is already gone has to be reported as gone, at once: waiting
+// out the deadline for a process nothing can revive helps nobody.
+func TestAwaitProxyPort_ReportsHelperExitAfterEOF(t *testing.T) {
+	r, w := announcePipe(t)
+	if err := w.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	// The status lands after the EOF, as cmd.Wait's does: a closed stdout must
+	// not be reported as a deadline while the status is still on its way.
+	exited := make(chan error, 1)
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		exited <- errors.New("exit status 2")
+	}()
+
+	start := time.Now()
+	_, err := awaitProxyPort(r, exited, 30*time.Second)
+	if err == nil {
+		t.Fatal("awaitProxyPort = nil, want an exit error")
+	}
+	if !errors.Is(err, errProxyHelperExited) {
+		t.Errorf("errors.Is(%q, errProxyHelperExited) = false, want true", err)
+	}
+	if !strings.Contains(err.Error(), "exited") || !strings.Contains(err.Error(), "exit status 2") {
+		t.Errorf("exit error = %q, want it to report the exit and the wait error", err)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("waited %s for an already-exited helper", elapsed)
+	}
+}
+
+// The status can arrive while stdout is still open, and a nil one has to read
+// as an exit rather than as a formatted <nil>.
+func TestAwaitProxyPort_ReportsAHelperThatExitedCleanly(t *testing.T) {
+	r, _ := announcePipe(t)
+	exited := make(chan error, 1)
+	exited <- nil
+
+	_, err := awaitProxyPort(r, exited, 30*time.Second)
+	if err == nil {
+		t.Fatal("awaitProxyPort = nil, want an exit error")
+	}
+	if !strings.Contains(err.Error(), "exited") {
+		t.Errorf("exit error = %q, want it to report the exit", err)
+	}
+	if strings.Contains(err.Error(), "nil") {
+		t.Errorf("exit error = %q, want no formatting of the nil wait result", err)
+	}
+}
+
+func TestAwaitProxyPort_DeadlineWhenNothingIsAnnounced(t *testing.T) {
+	r, _ := announcePipe(t)
+	deadline := 150 * time.Millisecond
+	start := time.Now()
+	_, err := awaitProxyPort(r, make(chan error), deadline)
+	if err == nil {
+		t.Fatal("awaitProxyPort = nil, want a deadline error")
+	}
+	if !strings.Contains(err.Error(), "150ms") {
+		t.Errorf("deadline error = %q, want it to name the deadline", err)
+	}
+	if errors.Is(err, errProxyHelperExited) {
+		t.Errorf("deadline error = %q, want it distinguishable from an exit", err)
+	}
+	if elapsed := time.Since(start); elapsed < deadline {
+		t.Errorf("returned after %s, want at least the %s deadline", elapsed, deadline)
+	}
+}
+
+func TestAwaitProxyPort_RejectsAnUnparsableAnnouncement(t *testing.T) {
+	r, w := announcePipe(t)
+	go func() { _, _ = io.WriteString(w, "Basic abc123\n") }()
+	_, err := awaitProxyPort(r, make(chan error), 5*time.Second)
+	if err == nil {
+		t.Fatal("awaitProxyPort = nil, want a parse error")
+	}
+	if !strings.Contains(err.Error(), `"Basic abc123"`) {
+		t.Errorf("parse error = %q, want it to quote the announced line", err)
+	}
+}
+
+// announcePipe returns the two ends of an announce channel, closed at test end
+// so awaitProxyPort's reading goroutine cannot outlive the test.
+func announcePipe(t *testing.T) (*io.PipeReader, *io.PipeWriter) {
+	t.Helper()
+	r, w := io.Pipe()
+	t.Cleanup(func() {
+		_ = r.Close()
+		_ = w.Close()
+	})
+	return r, w
+}
+
+// The announcement is the whole handshake: it may not appear before the
+// credential is in, or the parent would treat a listener with no credential as
+// ready.
+func TestRunProxyHelper_AnnouncesOnlyAfterTheHeader(t *testing.T) {
+	stdinR, stdinW := io.Pipe()
+	announceR, announceW := io.Pipe()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- runProxyHelper(ctx, "proxy.example:8080", stdinR, announceW) }()
+	t.Cleanup(func() {
+		cancel()
+		_ = stdinW.Close()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Errorf("runProxyHelper = %v, want nil", err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Error("runProxyHelper did not return after the context was cancelled")
+		}
+		_ = announceR.Close()
+	})
+
+	announced := make(chan string, 1)
+	go func() {
+		line, err := bufio.NewReader(announceR).ReadString('\n')
+		if err == nil {
+			announced <- strings.TrimSpace(line)
+		}
+		close(announced)
+	}()
+	select {
+	case line := <-announced:
+		t.Fatalf("announced %q with stdin unwritten, want nothing until the header arrives", line)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	if _, err := io.WriteString(stdinW, "Basic abc123\n"); err != nil {
+		t.Fatalf("write auth header: %v", err)
+	}
+	var line string
+	select {
+	case l, ok := <-announced:
+		if !ok {
+			t.Fatal("announce channel closed without a port line")
+		}
+		line = l
+	case <-time.After(10 * time.Second):
+		t.Fatal("no port announced after the header was written")
+	}
+	port, err := strconv.Atoi(line)
+	if err != nil {
+		t.Fatalf("announced %q, want a port: %v", line, err)
+	}
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 5*time.Second)
+	if err != nil {
+		t.Fatalf("dial announced port %d: %v", port, err)
+	}
+	_ = conn.Close()
+}
+
+func TestRunProxyHelper_StdinClosedWithoutAHeader(t *testing.T) {
+	stdinR, stdinW := io.Pipe()
+	var announce bytes.Buffer
+	done := make(chan error, 1)
+	go func() { done <- runProxyHelper(context.Background(), "proxy.example:8080", stdinR, &announce) }()
+	if err := stdinW.Close(); err != nil {
+		t.Fatalf("close stdin: %v", err)
+	}
+
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "no auth header arrived on stdin") {
+			t.Errorf("runProxyHelper = %v, want it to report that no auth header arrived on stdin", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("runProxyHelper did not return after stdin closed")
+	}
+	if announce.Len() != 0 {
+		t.Errorf("announced %q without a credential, want nothing", announce.String())
+	}
+}
+
+func TestStopProxyHelper_LeavesAReapedHelperAlone(t *testing.T) {
+	exited := make(chan error, 1)
+	exited <- nil
+	var out bytes.Buffer
+	// A negative PID keeps signalPID inert; only the decision is under test.
+	stopProxyHelper(-1, exited, &out)
+	if out.Len() != 0 {
+		t.Errorf("stopProxyHelper printed %q for an exited helper, want nothing", out.String())
+	}
+}
+
+func TestStopProxyHelper_StopsARunningHelper(t *testing.T) {
+	var out bytes.Buffer
+	stopProxyHelper(-1, make(chan error), &out)
+	if !strings.Contains(out.String(), "stopping proxy helper") {
+		t.Errorf("stopProxyHelper printed %q, want it to report stopping the helper", out.String())
+	}
+}
+
+func TestProxyLogPath_LivesInStateDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("RODDY_HOME", home)
+	if got, want := proxyLogPath(), filepath.Join(home, "proxy.log"); got != want {
+		t.Errorf("proxyLogPath() = %q, want %q", got, want)
+	}
+}
+
+func TestProxyHelperFailure_InlinesTheHelperOutput(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "proxy.log")
+	if err := os.WriteFile(logPath, []byte("error: proxy listen failed: address already in use\nsecond line\n"), 0600); err != nil {
+		t.Fatalf("write log: %v", err)
+	}
+	msg := proxyHelperFailure(errProxyHelperExited, logPath)
+	if !strings.Contains(msg, "exited before announcing a port") ||
+		!strings.Contains(msg, "proxy listen failed: address already in use | second line") {
+		t.Errorf("proxyHelperFailure = %q, want the startup error and the folded helper log", msg)
+	}
+	if strings.Contains(msg, "helper output: error: ") {
+		t.Errorf("proxyHelperFailure = %q, want the helper's own \"error: \" prefix stripped", msg)
+	}
+	if !strings.Contains(msg, logPath) {
+		t.Errorf("proxyHelperFailure = %q, want it to name %q", msg, logPath)
+	}
+	if strings.Contains(msg, "\n") {
+		t.Errorf("proxyHelperFailure = %q, want one line (fatal appends its own)", msg)
+	}
+}
+
+func TestProxyHelperFailure_CapsTheInlinedOutput(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "proxy.log")
+	var logText strings.Builder
+	for i := 1; i <= proxyLogInlineLines+2; i++ {
+		fmt.Fprintf(&logText, "line %d\n", i)
+	}
+	if err := os.WriteFile(logPath, []byte(logText.String()), 0600); err != nil {
+		t.Fatalf("write log: %v", err)
+	}
+	msg := proxyHelperFailure(errors.New("boom"), logPath)
+	if !strings.Contains(msg, fmt.Sprintf("line %d", proxyLogInlineLines)) {
+		t.Errorf("proxyHelperFailure = %q, want the first %d lines", msg, proxyLogInlineLines)
+	}
+	if strings.Contains(msg, fmt.Sprintf("line %d", proxyLogInlineLines+1)) {
+		t.Errorf("proxyHelperFailure = %q, want at most %d lines inlined", msg, proxyLogInlineLines)
+	}
+	if !strings.Contains(msg, "…") {
+		t.Errorf("proxyHelperFailure = %q, want the truncation marked", msg)
+	}
+}
+
+func TestProxyHelperFailure_UnreadableLog(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "missing.log")
+	_, readErr := os.ReadFile(logPath)
+	if readErr == nil {
+		t.Fatalf("reading %s succeeded, want it missing", logPath)
+	}
+	msg := proxyHelperFailure(errors.New("boom"), logPath)
+	if !strings.Contains(msg, "boom") || !strings.Contains(msg, "unreadable") ||
+		!strings.Contains(msg, logPath) || !strings.Contains(msg, readErr.Error()) {
+		t.Errorf("proxyHelperFailure = %q, want the error, %q and why it is unreadable (%v)", msg, logPath, readErr)
+	}
+}
+
+func TestProxyHelperFailure_EmptyLog(t *testing.T) {
+	// Not named "empty.log": the path would satisfy the assertion by itself.
+	logPath := filepath.Join(t.TempDir(), "proxy.log")
+	if err := os.WriteFile(logPath, []byte("\n"), 0600); err != nil {
+		t.Fatalf("write log: %v", err)
+	}
+	msg := proxyHelperFailure(errors.New("boom"), logPath)
+	if !strings.Contains(msg, "boom") || !strings.Contains(msg, "is empty") || !strings.Contains(msg, logPath) {
+		t.Errorf("proxyHelperFailure (empty log) = %q, want the error, %q and that the log is empty", msg, logPath)
 	}
 }
 
