@@ -580,7 +580,7 @@ func applySandboxFlags(l *launcher.Launcher, unsandboxed bool) *launcher.Launche
 // --single-process — the environments that need one tend to need the other
 // (see singleProcessSupported in chrome_flags.go), and --single-process on a
 // platform that does not need it turns a renderer crash into a browser abort.
-func newStartLauncher(dataDir string, headless, unsandboxed bool, extensions []extensionInfo) *launcher.Launcher {
+func newStartLauncher(dataDir string, headless, unsandboxed bool, extensions []extensionInfo, proxyPort int, ignoreCertErrors bool) *launcher.Launcher {
 	l := launcher.New().
 		Set("disable-gpu").
 		Leakless(false). // Keep Chrome alive after CLI exits
@@ -598,6 +598,16 @@ func newStartLauncher(dataDir string, headless, unsandboxed bool, extensions []e
 	}
 
 	l = configureExtensions(l, headless, extensions)
+
+	if proxyPort > 0 {
+		l.Set("proxy-server", fmt.Sprintf("http://127.0.0.1:%d", proxyPort))
+	}
+	// Only --insecure sets this: the proxy helper is a transparent CONNECT
+	// tunnel and originates no cert error, and the flag would drop TLS
+	// validation for every page in the session.
+	if ignoreCertErrors {
+		l.Set("ignore-certificate-errors")
+	}
 
 	if bin := os.Getenv("ROD_CHROME_BIN"); bin != "" {
 		l = l.Bin(bin)
@@ -625,7 +635,7 @@ func cmdStart(args []string) {
 		}
 	}
 
-	ignoreCertErrors, headless := opts.ignoreCertErrors, opts.headless
+	headless := opts.headless
 
 	// Check if already running
 	if s, err := loadState(); err == nil {
@@ -717,22 +727,11 @@ func cmdStart(args []string) {
 			fatal("%s", proxyHelperFailure(err, logPath))
 		}
 
-		// Chrome rejects the chain when the upstream proxy inspects TLS and
-		// re-signs, or when the environment lacks the root CAs
-		// (notes/claude-chrome-proxy/README.md). The helper itself is a
-		// transparent CONNECT tunnel and originates no cert error.
-		ignoreCertErrors = true
 		fmt.Printf("Auth proxy started (PID %d, port %d) -> %s\n", proxyPID, proxyPort, server)
 	}
 
 	launch := func(unsandboxed bool) (*launcher.Launcher, string, error) {
-		l := newStartLauncher(dataDir, headless, unsandboxed, extensions)
-		if proxyPort > 0 {
-			l.Set("proxy-server", fmt.Sprintf("http://127.0.0.1:%d", proxyPort))
-		}
-		if ignoreCertErrors {
-			l.Set("ignore-certificate-errors")
-		}
+		l := newStartLauncher(dataDir, headless, unsandboxed, extensions, proxyPort, opts.ignoreCertErrors)
 		u, err := l.Launch()
 		return l, u, err
 	}
@@ -941,6 +940,18 @@ func normalizeOpenURL(url string) string {
 	return "http://" + url
 }
 
+// navigationFailure formats a failed navigation, adding what to do about
+// Chrome's "net::ERR_CERT_*" / "net::ERR_SSL_*" errorText: roddy's own proxy
+// helper never terminates TLS, so those come from the server's certificate or
+// from an upstream proxy that re-signs with its own CA.
+func navigationFailure(err error) string {
+	msg := fmt.Sprintf("navigation failed: %v", err)
+	if text := err.Error(); strings.Contains(text, "ERR_CERT_") || strings.Contains(text, "ERR_SSL_") {
+		msg += "; for a self-signed or TLS-inspecting-proxy certificate, install its CA for Chrome or restart with `roddy start --insecure`"
+	}
+	return msg
+}
+
 func cmdOpen(args []string) {
 	if len(args) < 1 {
 		fatal("usage: roddy open <url>")
@@ -962,7 +973,7 @@ func cmdOpen(args []string) {
 	if len(pages) == 0 {
 		page, err = browser.Page(proto.TargetCreateTarget{URL: url})
 		if err != nil {
-			fatal("navigation failed: %v", err)
+			fatal("%s", navigationFailure(err))
 		}
 		s.ActivePage = 0
 		if err := saveState(s); err != nil {
@@ -974,7 +985,7 @@ func cmdOpen(args []string) {
 			fatal("%v", err)
 		}
 		if err := page.Navigate(url); err != nil {
-			fatal("navigation failed: %v", err)
+			fatal("%s", navigationFailure(err))
 		}
 	}
 	waitLoaded(page)

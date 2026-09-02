@@ -53,7 +53,8 @@ rely on it.
 roddy start              # launch headless Chrome (downloads its own Chromium on first run)
 roddy start --show       # launch with a visible window (great for watching a repro)
 roddy start --extension <path>   # load a Chrome extension (works headless — see below)
-roddy start --insecure   # or -k: ignore certificate errors (self-signed dev servers)
+roddy start --insecure   # or -k: ignore certificate errors (self-signed dev servers,
+                         # TLS-inspecting proxies; open says so when it hits one)
 roddy start --no-sandbox # skip Chrome's sandbox (implied as root and in containers;
                          # unsandboxed sessions say "sandbox off" in start output and status)
 roddy connect <host:port>        # attach to a Chrome already listening on a debug port

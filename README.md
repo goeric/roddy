@@ -747,6 +747,13 @@ This is necessary because Chrome cannot natively authenticate to proxies during 
 
 `start` waits for that local proxy to report the port it bound; if the helper exits first or never reports one, `start` stops it and fails (exit 2) with the helper's own output in the error message. That output also lands in `proxy.log` under the state directory (`~/.roddy/`, or `./.roddy/` with `--local`), overwritten on each `start`.
 
+### Certificate errors behind a proxy
+
+The local helper is a transparent CONNECT tunnel: it never terminates TLS, so it originates no certificate error. A `net::ERR_CERT_*` behind a proxy comes from an upstream proxy that inspects TLS and re-signs with its own CA (or from a container missing root CAs), and `start` no longer disables certificate validation on that path — `open` says so when it hits one. Two fixes:
+
+- Install the proxy's CA where Chrome reads it. On Linux that is the NSS shared DB — `certutil -d sql:$HOME/.pki/nssdb -A -t "C,," -n <name> -i <ca.pem>` (`certutil` comes from the `libnss3-tools` package); on macOS, the login keychain.
+- Or restart with `roddy start --insecure`, which ignores certificate errors for every page in the session.
+
 See [notes/claude-chrome-proxy/README.md](notes/claude-chrome-proxy/README.md) for detailed technical notes.
 
 ## How it works

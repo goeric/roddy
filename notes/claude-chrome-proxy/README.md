@@ -130,8 +130,10 @@ func proxyConnect(w http.ResponseWriter, r *http.Request, upstream, authHeader s
 
 Once the proxy tunnel is working, there's a secondary issue: `ERR_CERT_AUTHORITY_INVALID`.
 This happens because the proxy infrastructure may perform TLS inspection, or the
-container lacks certain root CAs. The fix is to launch Chrome with
-`--ignore-certificate-errors` when using the proxy.
+container lacks certain root CAs — never because of the helper, which tunnels
+CONNECT without terminating TLS. `start` no longer adds
+`--ignore-certificate-errors` on the proxy path: install the inspecting proxy's
+CA where Chrome reads it, or launch with `roddy start --insecure`.
 
 ### Proxy detection
 
@@ -158,7 +160,7 @@ roddy start
      Superseded: <authHeader> used to be a third argument, visible in ps.
   4. Store proxy PID in state
   5. Launch Chrome with --proxy-server=http://127.0.0.1:<port>
-                        --ignore-certificate-errors
+                        (--ignore-certificate-errors only with --insecure)
   6. Store Chrome PID and debug URL in state
 
 roddy open https://www.example.com/

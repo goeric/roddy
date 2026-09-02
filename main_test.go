@@ -1407,7 +1407,7 @@ func TestApplySandboxFlags_Unsandboxed(t *testing.T) {
 }
 
 func TestNewStartLauncher_SandboxedByDefault(t *testing.T) {
-	l := newStartLauncher(t.TempDir(), true, false, nil)
+	l := newStartLauncher(t.TempDir(), true, false, nil, 0, false)
 	if l.Has("no-sandbox") {
 		t.Error("--no-sandbox set on a default launch")
 	}
@@ -1417,7 +1417,7 @@ func TestNewStartLauncher_SandboxedByDefault(t *testing.T) {
 }
 
 func TestNewStartLauncher_Unsandboxed(t *testing.T) {
-	l := newStartLauncher(t.TempDir(), true, true, nil)
+	l := newStartLauncher(t.TempDir(), true, true, nil, 0, false)
 	if !l.Has("no-sandbox") {
 		t.Error("--no-sandbox missing from an unsandboxed launch")
 	}
@@ -1429,12 +1429,34 @@ func TestNewStartLauncher_Unsandboxed(t *testing.T) {
 // Extensions break under --single-process, so configureExtensions deletes it —
 // which only works while it runs AFTER applySandboxFlags in newStartLauncher.
 func TestNewStartLauncher_ExtensionsOutrankSingleProcess(t *testing.T) {
-	l := newStartLauncher(t.TempDir(), true, true, []extensionInfo{{Dir: "/tmp/ext"}})
+	l := newStartLauncher(t.TempDir(), true, true, []extensionInfo{{Dir: "/tmp/ext"}}, 0, false)
 	if l.Has("single-process") {
 		t.Error("--single-process survived loading an extension")
 	}
 	if got := headlessMode(l); got != "new" {
 		t.Errorf("headless = %q, want %q", got, "new")
+	}
+}
+
+// The proxy helper is a transparent CONNECT tunnel that never terminates TLS,
+// so a proxied launch must keep Chrome's certificate validation.
+func TestNewStartLauncher_ProxyKeepsCertValidation(t *testing.T) {
+	l := newStartLauncher(t.TempDir(), true, false, nil, 9222, false)
+	if l.Has("ignore-certificate-errors") {
+		t.Error("--ignore-certificate-errors set on a proxied launch")
+	}
+	if got, want := l.Get("proxy-server"), "http://127.0.0.1:9222"; got != want {
+		t.Errorf("proxy-server = %q, want %q", got, want)
+	}
+}
+
+func TestNewStartLauncher_InsecureIgnoresCertErrors(t *testing.T) {
+	l := newStartLauncher(t.TempDir(), true, false, nil, 0, true)
+	if !l.Has("ignore-certificate-errors") {
+		t.Error("--ignore-certificate-errors missing from an --insecure launch")
+	}
+	if l.Has("proxy-server") {
+		t.Error("--proxy-server set without a proxy helper")
 	}
 }
 
@@ -1446,7 +1468,7 @@ func TestSandboxedLaunch(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("running as root: Chrome cannot sandbox itself")
 	}
-	l := newStartLauncher(t.TempDir(), true, false, nil)
+	l := newStartLauncher(t.TempDir(), true, false, nil, 0, false)
 	u, err := l.Launch()
 	if err != nil {
 		// Probe rather than read the message: an unsandboxed launch that comes
@@ -1510,7 +1532,7 @@ func waitProcessGone(t testing.TB, pid int) {
 // Leakless(false), so every failure path after Launch must kill it.
 func probeUnsandboxedLaunch(t testing.TB, dataDir string) error {
 	t.Helper()
-	l := newStartLauncher(dataDir, true, true, nil)
+	l := newStartLauncher(dataDir, true, true, nil, 0, false)
 	u, err := l.Launch()
 	if err != nil {
 		return err
@@ -1944,6 +1966,32 @@ func TestInsecureFlag_WithSelfSignedCert(t *testing.T) {
 			t.Errorf("expected page to load successfully with title 'Secure Test', got %q", title)
 		}
 	})
+}
+
+// --- navigationFailure ---
+
+func TestNavigationFailure_CertErrorCarriesTheHint(t *testing.T) {
+	msg := navigationFailure(errors.New("net::ERR_CERT_AUTHORITY_INVALID"))
+	if !strings.HasPrefix(msg, "navigation failed: net::ERR_CERT_AUTHORITY_INVALID") {
+		t.Errorf("navigationFailure = %q, want it to lead with the plain message", msg)
+	}
+	if !strings.Contains(msg, "CA") || !strings.Contains(msg, "roddy start --insecure") {
+		t.Errorf("navigationFailure = %q, want the CA / --insecure hint", msg)
+	}
+}
+
+func TestNavigationFailure_SSLErrorCarriesTheHint(t *testing.T) {
+	msg := navigationFailure(errors.New("net::ERR_SSL_PROTOCOL_ERROR"))
+	if !strings.Contains(msg, "roddy start --insecure") {
+		t.Errorf("navigationFailure = %q, want the CA / --insecure hint", msg)
+	}
+}
+
+func TestNavigationFailure_UnrelatedErrorIsUnchanged(t *testing.T) {
+	msg := navigationFailure(errors.New("net::ERR_NAME_NOT_RESOLVED"))
+	if want := "navigation failed: net::ERR_NAME_NOT_RESOLVED"; msg != want {
+		t.Errorf("navigationFailure = %q, want %q", msg, want)
+	}
 }
 
 // --- normalizeOpenURL ---
