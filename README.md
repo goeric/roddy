@@ -110,7 +110,7 @@ Each CLI invocation is a short-lived process. Chrome runs independently and tabs
 ```bash
 roddy start              # Launch headless Chrome
 roddy start --show       # Launch with visible browser window
-roddy start --insecure   # Launch with TLS errors ignored (-k shorthand)
+roddy start --insecure   # Launch with certificate errors ignored (-k shorthand)
 roddy start --no-sandbox # Launch without Chrome's sandbox (containers, gVisor)
 roddy connect host:9222  # Connect to existing Chrome on remote debug port
 roddy status             # Show browser info and active page
@@ -746,6 +746,26 @@ In environments with authenticated HTTP proxies (e.g., `HTTPS_PROXY=http://user:
 This is necessary because Chrome cannot natively authenticate to proxies during HTTPS tunnel (CONNECT) establishment. The local proxy runs as a background process and is automatically cleaned up by `roddy stop`.
 
 `start` waits for that local proxy to report the port it bound; if the helper exits first or never reports one, `start` stops it and fails (exit 2) with the helper's own output in the error message. That output also lands in `proxy.log` under the state directory (`~/.roddy/`, or `./.roddy/` with `--local`), overwritten on each `start`.
+
+### Certificate errors behind a proxy
+
+The local helper is a transparent CONNECT tunnel: it never terminates TLS, so it originates no certificate error. A `net::ERR_CERT_*` behind a proxy is the target's own certificate or an upstream proxy that inspects TLS and re-signs with its own CA. `start` keeps certificate validation on that path, and `open` (and `newpage`) names both fixes when it hits one:
+
+- Install that CA where Chrome reads it. On Linux that is the NSS shared DB — Chrome reads it from `~/.pki/nssdb` only, and ignores `--user-data-dir` for trust:
+
+  ```bash
+  mkdir -p "$HOME/.pki/nssdb"   # certutil fails if the directory is absent
+  certutil -d sql:"$HOME/.pki/nssdb" -A -t "C,," -n <name> -i <ca.pem>
+  roddy stop && roddy start     # a running Chrome does not pick up new anchors
+  ```
+
+  `certutil` ships in `libnss3-tools` (Debian/Ubuntu) or `nss-tools` (Fedora). On macOS the login keychain holds it, and importing without `-r trustRoot` trusts nothing:
+
+  ```bash
+  security add-trusted-cert -r trustRoot -k ~/Library/Keychains/login.keychain-db <ca.pem>
+  ```
+
+- Or restart with `roddy start --insecure`, which ignores certificate errors for every page in the session — `start` and `status` then say "certificate errors ignored".
 
 See [notes/claude-chrome-proxy/README.md](notes/claude-chrome-proxy/README.md) for detailed technical notes.
 

@@ -101,8 +101,7 @@ This is much simpler than a daemon architecture while still providing statefulne
 - CDP `Fetch` domain (HandleAuth) doesn't help - operates above the CONNECT tunnel layer
 - **Solution**: local forwarding proxy that injects `Proxy-Authorization` into CONNECT requests
 - The roddy binary acts as its own proxy helper via hidden `_proxy` subcommand
-- Also needed `--ignore-certificate-errors` due to cert issues through the proxy
-- See `claude-code-chrome-proxy.md` for full details
+- Cert errors behind that proxy come from its TLS inspection, not the helper; `start` keeps validation on, `--insecure` turns it off (see `notes/claude-chrome-proxy/README.md`)
 
 ### What could be improved
 - No XPath support yet (rod supports it via `page.ElementX()`)
