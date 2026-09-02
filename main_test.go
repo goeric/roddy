@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -10,7 +12,10 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
+	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -1160,6 +1165,423 @@ func TestParseStartArgs_UnknownFlag(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "--bogus") {
 		t.Errorf("error should mention the unknown flag, got: %v", err)
+	}
+}
+
+func TestParseStartArgs_NoSandboxFlag(t *testing.T) {
+	opts, err := parseStartArgs([]string{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if opts.noSandbox {
+		t.Error("expected noSandbox=false with no flags")
+	}
+	opts, err = parseStartArgs([]string{"--no-sandbox"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !opts.noSandbox {
+		t.Error("expected noSandbox=true when --no-sandbox is passed")
+	}
+}
+
+// sandbox defaults
+// ================
+
+func TestLaunchUnsandboxed(t *testing.T) {
+	cases := []struct {
+		flag        bool
+		euid        int
+		inContainer bool
+		want        bool
+		wantReason  bool // a note is printed only when the environment decided
+	}{
+		{false, 501, false, false, false}, // the default: sandboxed
+		{true, 501, false, true, false},   // --no-sandbox
+		{false, 0, false, true, true},     // root: Chrome refuses to sandbox at all
+		{true, 0, false, true, false},     // the flag already said so: no note
+		{false, 501, true, true, true},    // container: no kernel support to sandbox with
+		{true, 501, true, true, false},
+		{false, 0, true, true, true},
+	}
+	for _, c := range cases {
+		got, reason := launchUnsandboxed(c.flag, c.euid, c.inContainer)
+		if got != c.want {
+			t.Errorf("launchUnsandboxed(%v, %d, %v) = %v, want %v", c.flag, c.euid, c.inContainer, got, c.want)
+		}
+		if (reason != "") != c.wantReason {
+			t.Errorf("launchUnsandboxed(%v, %d, %v) reason = %q, want non-empty: %v",
+				c.flag, c.euid, c.inContainer, reason, c.wantReason)
+		}
+	}
+}
+
+func TestSandboxLaunchError(t *testing.T) {
+	// Lines a healthy Chrome prints; rod hands the whole buffer to the error,
+	// so any failure of a Chrome that got as far as starting carries the
+	// generic words "sandbox" and "zygote".
+	const noise = "[WARNING:sandbox_linux.cc(393)] InitializeSandbox() called with multiple threads in process gpu-process.\n" +
+		"[ERROR:zygote_host_impl_linux.cc(90)] Failed to adjust OOM score of renderer with pid 42: Permission denied.\n"
+
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{
+			"unshare denied",
+			errors.New("Failed to get the debug url: " + noise +
+				"[FATAL:zygote_host_impl_linux.cc(200)] Check failed: . : Failed to move to new namespace: PID namespaces supported, Network namespace supported, but failed: errno = Operation not permitted"),
+			true,
+		},
+		{
+			"no usable sandbox",
+			errors.New("Failed to get the debug url: " + noise +
+				"[FATAL:zygote_host_impl_linux.cc(107)] No usable sandbox! You need to build a kernel with CONFIG_USER_NS enabled"),
+			true,
+		},
+		{
+			"suid helper misconfigured",
+			errors.New("Failed to get the debug url: The SUID sandbox helper binary was found, but is not configured correctly"),
+			true,
+		},
+		{
+			"root without the flag",
+			errors.New("Failed to get the debug url: " + noise +
+				"[FATAL:zygote_host_impl_linux.cc(120)] Running as root without --no-sandbox is not supported. See https://crbug.com/638180."),
+			true,
+		},
+		{
+			"zygote fork failure",
+			errors.New("Failed to get the debug url: " + noise + "Zygote could not fork: process_type renderer"),
+			true,
+		},
+		{
+			"an unrelated crash after the routine sandbox noise",
+			errors.New("Failed to get the debug url: " + noise +
+				"[FATAL:video_capture_device_factory_apple.mm(37)] Check failed: mode."),
+			false,
+		},
+		{
+			"a stale profile lock, noise included",
+			errors.New("Failed to get the debug url: " + noise + "SingletonLock: file exists"),
+			false,
+		},
+		{
+			// Deliberate: this line also appears when the zygote binary is
+			// missing or unexecutable, so it is not evidence about the sandbox
+			// and must not downgrade the session.
+			"a zygote that never launched",
+			errors.New("Failed to get the debug url: " + noise + "Failed to launch zygote process"),
+			false,
+		},
+		{"a missing binary", errors.New("exec: \"/nope/chrome\": file does not exist"), false},
+	}
+	for _, c := range cases {
+		if got := sandboxLaunchError(c.err); got != c.want {
+			t.Errorf("sandboxLaunchError(%s) = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestLaunchWithFallback(t *testing.T) {
+	sandboxErr := errors.New("Failed to move to new namespace")
+	otherErr := errors.New("SingletonLock: file exists")
+	retryErr := errors.New("no such file or directory")
+
+	cases := []struct {
+		name            string
+		unsandboxed     bool
+		results         []error // one per expected call, in order
+		wantCalls       []bool  // the unsandboxed argument each call must receive
+		wantErr         error
+		wantUnsandboxed bool
+		wantWarn        string // substring, "" means nothing written
+	}{
+		{
+			name:      "success launches once",
+			results:   []error{nil},
+			wantCalls: []bool{false},
+		},
+		{
+			name:            "sandbox-shaped error retries unsandboxed",
+			results:         []error{sandboxErr, nil},
+			wantCalls:       []bool{false, true},
+			wantUnsandboxed: true,
+			wantWarn:        sandboxErr.Error(),
+		},
+		{
+			name:      "other errors surface without a retry",
+			results:   []error{otherErr},
+			wantCalls: []bool{false},
+			wantErr:   otherErr,
+		},
+		{
+			name:            "an unsandboxed attempt has nothing to fall back to",
+			unsandboxed:     true,
+			results:         []error{sandboxErr},
+			wantCalls:       []bool{true},
+			wantErr:         sandboxErr,
+			wantUnsandboxed: true,
+		},
+		{
+			name:            "both fail: the retry's error is the one returned",
+			results:         []error{sandboxErr, retryErr},
+			wantCalls:       []bool{false, true},
+			wantErr:         retryErr,
+			wantUnsandboxed: true,
+			wantWarn:        sandboxErr.Error(),
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			// A distinct launcher and URL per call: returning the failed first
+			// attempt's pair would write a dead PID into the state file.
+			var calls []bool
+			var launchers []*launcher.Launcher
+			launch := func(unsandboxed bool) (*launcher.Launcher, string, error) {
+				calls = append(calls, unsandboxed)
+				if len(calls) > len(c.results) {
+					t.Fatalf("launch called %d times, want %d", len(calls), len(c.results))
+				}
+				l := launcher.New()
+				launchers = append(launchers, l)
+				return l, fmt.Sprintf("ws://attempt-%d", len(calls)), c.results[len(calls)-1]
+			}
+			var warn bytes.Buffer
+			l, u, unsandboxed, err := launchWithFallback(launch, c.unsandboxed, &warn)
+
+			if !reflect.DeepEqual(calls, c.wantCalls) {
+				t.Fatalf("launch calls = %v, want %v", calls, c.wantCalls)
+			}
+			if !errors.Is(err, c.wantErr) {
+				t.Errorf("err = %v, want %v", err, c.wantErr)
+			}
+			if unsandboxed != c.wantUnsandboxed {
+				t.Errorf("unsandboxed = %v, want %v", unsandboxed, c.wantUnsandboxed)
+			}
+			// Whatever the outcome, the LAST attempt's launcher and URL are the
+			// ones describing the process that is (or is not) now running.
+			last := len(calls) - 1
+			if l != launchers[last] || u != fmt.Sprintf("ws://attempt-%d", last+1) {
+				t.Errorf("result = %p, %q; want attempt %d's", l, u, last+1)
+			}
+			if c.wantWarn == "" {
+				if warn.Len() > 0 {
+					t.Errorf("unexpected warning: %q", warn.String())
+				}
+			} else if !strings.Contains(warn.String(), c.wantWarn) {
+				t.Errorf("warning = %q, want it to mention %q", warn.String(), c.wantWarn)
+			}
+		})
+	}
+}
+
+// A sandboxed launch must DELETE --no-sandbox, not merely skip setting it:
+// rod's launcher.New() seeds it inside containers, where a test that only
+// checks a fresh launcher would pass without exercising anything.
+func TestApplySandboxFlags_DeletesContainerSeededNoSandbox(t *testing.T) {
+	l := applySandboxFlags(launcher.New().Set("no-sandbox"), false)
+	if l.Has("no-sandbox") {
+		t.Error("--no-sandbox survived a sandboxed launch")
+	}
+	if l.Has("single-process") {
+		t.Error("--single-process set on a sandboxed launch")
+	}
+}
+
+func TestApplySandboxFlags_Unsandboxed(t *testing.T) {
+	l := applySandboxFlags(launcher.New(), true)
+	if !l.Has("no-sandbox") {
+		t.Error("--no-sandbox missing from an unsandboxed launch")
+	}
+	if got, want := l.Has("single-process"), singleProcessSupported(); got != want {
+		t.Errorf("single-process = %v, want %v (platform: %v)", got, want, runtime.GOOS)
+	}
+}
+
+func TestNewStartLauncher_SandboxedByDefault(t *testing.T) {
+	l := newStartLauncher(t.TempDir(), true, false, nil)
+	if l.Has("no-sandbox") {
+		t.Error("--no-sandbox set on a default launch")
+	}
+	if l.Has("single-process") {
+		t.Error("--single-process set on a default launch")
+	}
+}
+
+func TestNewStartLauncher_Unsandboxed(t *testing.T) {
+	l := newStartLauncher(t.TempDir(), true, true, nil)
+	if !l.Has("no-sandbox") {
+		t.Error("--no-sandbox missing from an unsandboxed launch")
+	}
+	if got, want := l.Has("single-process"), singleProcessSupported(); got != want {
+		t.Errorf("single-process = %v, want %v (platform: %v)", got, want, runtime.GOOS)
+	}
+}
+
+// Extensions break under --single-process, so configureExtensions deletes it —
+// which only works while it runs AFTER applySandboxFlags in newStartLauncher.
+func TestNewStartLauncher_ExtensionsOutrankSingleProcess(t *testing.T) {
+	l := newStartLauncher(t.TempDir(), true, true, []extensionInfo{{Dir: "/tmp/ext"}})
+	if l.Has("single-process") {
+		t.Error("--single-process survived loading an extension")
+	}
+	if got := headlessMode(l); got != "new" {
+		t.Errorf("headless = %q, want %q", got, "new")
+	}
+}
+
+// TestSandboxedLaunch is the test that matters for the sandbox default: a
+// plain start must come up with Chrome's sandbox intact and still drive a
+// page. Environments whose kernel cannot sandbox Chrome — root, containers,
+// gVisor — are the fallback's job, so they skip rather than fail.
+func TestSandboxedLaunch(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: Chrome cannot sandbox itself")
+	}
+	l := newStartLauncher(t.TempDir(), true, false, nil)
+	u, err := l.Launch()
+	if err != nil {
+		// Probe rather than read the message: an unsandboxed launch that comes
+		// up proves the environment, not roddy, is what refuses the sandbox.
+		if probeErr := probeUnsandboxedLaunch(t, t.TempDir()); probeErr != nil {
+			t.Fatalf("sandboxed launch failed: %v; unsandboxed launch also failed: %v", err, probeErr)
+		}
+		// macOS sandboxes Chrome without kernel configuration, so there is no
+		// environment left to blame: it is roddy's sandboxed flag set.
+		if runtime.GOOS == "darwin" {
+			t.Fatalf("sandboxed launch failed where the sandbox always works: %v", err)
+		}
+		t.Skipf("kernel cannot sandbox Chrome here (or roddy's sandboxed flag set is broken): %v", err)
+	}
+	browser := rod.New().ControlURL(u)
+	if err := browser.Connect(); err != nil {
+		// Chrome is Leakless(false): a failure before the defer would orphan it.
+		l.Kill()
+		waitProcessGone(t, l.PID())
+		t.Fatalf("connect to the sandboxed browser: %v", err)
+	}
+	defer func() {
+		if err := browser.Close(); err != nil {
+			l.Kill()
+		}
+		// Browser.close returns before the process is gone; wait for it or
+		// t.TempDir races the profile teardown.
+		waitProcessGone(t, l.PID())
+	}()
+
+	page := browser.MustPage(env.server.URL + "/")
+	page.MustWaitLoad()
+	if got := page.MustInfo().Title; got != "Test Page" {
+		t.Errorf("title = %q, want %q", got, "Test Page")
+	}
+}
+
+// waitProcessGone blocks until pid is gone, up to ~3s. rod's launcher runs its
+// own cmd.Wait, so a second Wait here would lose the race and return
+// immediately; signal 0 asks instead of reaping. On Windows Signal fails on
+// the first call, which just ends the poll.
+func waitProcessGone(t testing.TB, pid int) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		proc, err := os.FindProcess(pid)
+		if err != nil {
+			return
+		}
+		if err := proc.Signal(syscall.Signal(0)); err != nil {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	// Not fatal on its own; it explains a TempDir cleanup failure afterwards.
+	t.Logf("Chrome (PID %d) still alive after 3s", pid)
+}
+
+// probeUnsandboxedLaunch launches and immediately closes an unsandboxed
+// browser, reporting whether Chrome runs here at all. Chrome is launched
+// Leakless(false), so every failure path after Launch must kill it.
+func probeUnsandboxedLaunch(t testing.TB, dataDir string) error {
+	t.Helper()
+	l := newStartLauncher(dataDir, true, true, nil)
+	u, err := l.Launch()
+	if err != nil {
+		return err
+	}
+	browser := rod.New().ControlURL(u)
+	if err := browser.Connect(); err != nil {
+		l.Kill()
+		waitProcessGone(t, l.PID())
+		return err
+	}
+	err = browser.Close()
+	if err != nil {
+		l.Kill()
+	}
+	waitProcessGone(t, l.PID())
+	return err
+}
+
+// proxy helper
+// ============
+
+// The property the stdin handoff exists for: argv carries no credential, since
+// ps shows it to every user on the machine for the helper's whole lifetime.
+func TestProxyHelperCommand_ArgvCarriesNoCredential(t *testing.T) {
+	cmd := proxyHelperCommand("/usr/local/bin/roddy", 4242, "proxy.example:8080")
+	want := []string{"/usr/local/bin/roddy", "_proxy", "4242", "proxy.example:8080"}
+	if !reflect.DeepEqual(cmd.Args, want) {
+		t.Errorf("Args = %q, want %q", cmd.Args, want)
+	}
+	for _, arg := range cmd.Args {
+		if strings.Contains(arg, "Basic ") {
+			t.Errorf("argv carries a credential: %q", arg)
+		}
+	}
+}
+
+// errAfterPartialRead delivers data and a non-EOF error in the same Read, the
+// shape a truncated credential arrives in.
+type errAfterPartialRead struct {
+	data string
+	err  error
+	done bool
+}
+
+func (r *errAfterPartialRead) Read(p []byte) (int, error) {
+	if r.done {
+		return 0, r.err
+	}
+	r.done = true
+	n := copy(p, r.data)
+	return n, r.err
+}
+
+func TestReadProxyAuthHeader(t *testing.T) {
+	got, err := readProxyAuthHeader(strings.NewReader("Basic abc123\n"))
+	if err != nil || got != "Basic abc123" {
+		t.Errorf("readProxyAuthHeader = %q, %v; want %q, nil", got, err, "Basic abc123")
+	}
+	// A writer that closes without a newline still delivered the header.
+	got, err = readProxyAuthHeader(strings.NewReader("Basic abc123"))
+	if err != nil || got != "Basic abc123" {
+		t.Errorf("readProxyAuthHeader (no newline) = %q, %v; want %q, nil", got, err, "Basic abc123")
+	}
+	if _, err := readProxyAuthHeader(strings.NewReader("")); err == nil {
+		t.Error("expected an error for empty stdin")
+	}
+	if _, err := readProxyAuthHeader(strings.NewReader("\n")); err == nil {
+		t.Error("expected an error for a blank line")
+	}
+	// A partial line delivered with a real error is truncated credentials, not
+	// a header: the error has to win.
+	broken := errors.New("read |0: file already closed")
+	got, err = readProxyAuthHeader(&errAfterPartialRead{data: "Basic abc", err: broken})
+	if !errors.Is(err, broken) || got != "" {
+		t.Errorf("readProxyAuthHeader (partial + error) = %q, %v; want \"\", %v", got, err, broken)
 	}
 }
 

@@ -542,12 +542,11 @@ func TestUnpackExtension_RejectsPathTraversal(t *testing.T) {
 
 // --- end to end ---
 
-// TestExtension_LoadsInHeadlessChrome is the test that matters: it launches a
-// headless browser the same way "roddy start --extension" does and checks the
-// extension's content script actually ran on a page.
-// baseLauncher mirrors the flags cmdStart sets before configureExtensions
-// runs, configureExperiments included: with the dev snapshot's field-trial
-// config left active the browser routes MV3 workers' organic fetches through
+// baseLauncher mirrors the flags an UNSANDBOXED start sets before
+// configureExtensions runs (a plain start is sandboxed, and applySandboxFlags
+// gates single-process on the platform where this sets it unconditionally),
+// configureExperiments included: with the dev snapshot's field-trial config
+// left active the browser routes MV3 workers' organic fetches through
 // browser-level interception, which the shipped configuration does not — a
 // fixture without these flags tests a browser roddy never launches.
 func baseLauncher() *launcher.Launcher {
@@ -648,6 +647,9 @@ func TestConfigureExtensions_AppendsToExistingDisableFeatures(t *testing.T) {
 	}
 }
 
+// TestExtension_LoadsInHeadlessChrome is the test that matters: it launches a
+// headless browser with an extension loaded and checks the extension's content
+// script actually ran on a page.
 func TestExtension_LoadsInHeadlessChrome(t *testing.T) {
 	dir := writeTestExtension(t, filepath.Join(t.TempDir(), "ext"))
 

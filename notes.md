@@ -3,7 +3,8 @@
 ## Environment
 - Go 1.24.7 on linux/amd64
 - Google Chrome 144.0.7559.132 (installed via deb package)
-- Chrome runs headless with `--no-sandbox --disable-gpu`
+- Chrome runs headless with `--disable-gpu`; `--no-sandbox` only when the
+  sandbox is off (root, a detected container, or `--no-sandbox`)
 
 ## Research on rod library
 - GitHub: github.com/go-rod/rod (v0.116.2)

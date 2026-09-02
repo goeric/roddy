@@ -92,7 +92,8 @@ software-only rendering without the Viz display compositor's full IPC machinery.
 
 ## Fix Applied
 
-Added `Set("single-process")` to the Chrome launcher in `cmdStart()`:
+Added `Set("single-process")` to the Chrome launcher `start` builds
+(`applySandboxFlags`, called from `newStartLauncher`):
 
 ```go
 l := launcher.New().
@@ -103,6 +104,10 @@ l := launcher.New().
     Leakless(false).
     UserDataDir(dataDir)
 ```
+
+Since the sandbox-by-default change, `--single-process` (and `--no-sandbox`)
+only go on an unsandboxed launch — a container, root, or `--no-sandbox`. A
+plain sandboxed start gets neither.
 
 ## Trade-offs of `--single-process`
 

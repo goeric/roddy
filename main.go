@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bufio"
 	_ "embed"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -22,6 +24,7 @@ import (
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/proto"
+	"github.com/go-rod/rod/lib/utils"
 	"github.com/ysmood/gson"
 )
 
@@ -90,6 +93,8 @@ type State struct {
 	DataDir    string `json:"data_dir"`
 	ProxyPID   int    `json:"proxy_pid,omitempty"`  // PID of auth proxy helper
 	ProxyPort  int    `json:"proxy_port,omitempty"` // local port of auth proxy
+
+	Unsandboxed bool `json:"unsandboxed,omitempty"` // Chrome launched with --no-sandbox
 
 	Extensions []extensionInfo `json:"extensions,omitempty"` // extensions passed to --load-extension
 }
@@ -438,7 +443,7 @@ func bringToFront(page *rod.Page) {
 
 // --- Commands ---
 
-const startUsage = "usage: roddy start [--show] [--insecure] [--extension PATH] [--no-extension]"
+const startUsage = "usage: roddy start [--show] [--insecure] [--no-sandbox] [--extension PATH] [--no-extension]"
 
 // startOptions holds the parsed flags for the "start" command.
 type startOptions struct {
@@ -446,6 +451,7 @@ type startOptions struct {
 	headless         bool
 	extensions       []string
 	noExtension      bool // opt out of WXT auto-detection
+	noSandbox        bool // launch Chrome without its sandbox
 }
 
 // parseStartArgs parses the flags for the "start" command.
@@ -459,6 +465,7 @@ func parseStartArgs(args []string) (startOptions, error) {
 	fs.BoolVar(&opts.ignoreCertErrors, "k", false, "")
 	fs.Var(&extensions, "extension", "")
 	fs.BoolVar(&opts.noExtension, "no-extension", false, "")
+	fs.BoolVar(&opts.noSandbox, "no-sandbox", false, "")
 	show := fs.Bool("show", false, "")
 
 	if parseErr := fs.Parse(args); parseErr != nil {
@@ -473,6 +480,128 @@ func parseStartArgs(args []string) (startOptions, error) {
 	opts.headless = !*show
 	opts.extensions = extensions
 	return opts, nil
+}
+
+// inContainerEnv reports whether this process runs in a container. rod's
+// utils.InContainer covers /.dockerenv, /.containerenv and
+// KUBERNETES_SERVICE_HOST; podman writes /run/.containerenv instead.
+func inContainerEnv() bool {
+	if utils.InContainer {
+		return true
+	}
+	_, err := os.Stat("/run/.containerenv")
+	return err == nil
+}
+
+// launchUnsandboxed reports whether start must skip Chrome's sandbox up front:
+// the user asked with --no-sandbox, the process runs as root, or it runs in a
+// container. reason is the human-readable half of a "note: ... , launching
+// with --no-sandbox" line, empty when the flag decided it or when the launch
+// stays sandboxed.
+//
+// A DETECTED container therefore never attempts the sandbox: that reproduces
+// the pre-sandbox-default behaviour exactly — no failed attempt, no reliance
+// on matching an error's shape. Containers this misses fall through to the
+// sandboxed attempt; the sandbox-shaped-error retry is what covers them.
+func launchUnsandboxed(noSandboxFlag bool, euid int, inContainer bool) (unsandboxed bool, reason string) {
+	switch {
+	case noSandboxFlag:
+		return true, ""
+	case euid == 0:
+		return true, "running as root; Chrome cannot sandbox itself"
+	case inContainer:
+		return true, "container detected; its default seccomp/user-namespace policy usually blocks Chrome's sandbox"
+	}
+	return false, ""
+}
+
+// sandboxLaunchError reports whether a failed launch looks like Chrome could
+// not set up its sandbox. rod's launch error carries Chrome's whole stderr
+// buffer, and once Chrome starts it prints routine lines carrying those words
+// either in the text ("InitializeSandbox() called with multiple threads") or
+// in a log-source prefix ("[ERROR:zygote_host_impl_linux.cc] Failed to adjust
+// OOM score of renderer") — so match the phrases that name the cause, not the
+// words.
+func sandboxLaunchError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	for _, cause := range []string{
+		"failed to move to new namespace",
+		"no usable sandbox",
+		"suid sandbox helper",
+		"running as root without --no-sandbox",
+		"zygote could not fork",
+	} {
+		if strings.Contains(msg, cause) {
+			return true
+		}
+	}
+	return false
+}
+
+// launchWithFallback runs launch and, only when a sandboxed attempt failed for
+// a sandbox-shaped reason, retries unsandboxed. Any other failure is the
+// caller's to report: retrying on it would silently downgrade the session and
+// throw away the first error, the only record of what went wrong. The returned
+// bool is the mode that actually launched — the session's own record of
+// whether the sandbox is on.
+func launchWithFallback(launch func(unsandboxed bool) (*launcher.Launcher, string, error), unsandboxed bool, warn io.Writer) (*launcher.Launcher, string, bool, error) {
+	l, debugURL, err := launch(unsandboxed)
+	if err == nil || unsandboxed || !sandboxLaunchError(err) {
+		return l, debugURL, unsandboxed, err
+	}
+	fmt.Fprintf(warn, "note: sandboxed launch failed (%v); retrying with --no-sandbox\n", err)
+	l, debugURL, err = launch(true)
+	return l, debugURL, true, err
+}
+
+// applySandboxFlags puts the sandbox decision on a launcher. The sandboxed
+// branch deletes rather than omits --no-sandbox: launcher.New() seeds it
+// inside containers rod detects, so deleting keeps "sandboxed" meaning the
+// same on any launcher handed in, whatever the caller decided. cmdStart's
+// shipped path sends detected containers down the unsandboxed branch, so it
+// does not depend on this.
+func applySandboxFlags(l *launcher.Launcher, unsandboxed bool) *launcher.Launcher {
+	if !unsandboxed {
+		return l.Delete("no-sandbox")
+	}
+	l = l.Set("no-sandbox")
+	if singleProcessSupported() {
+		l = l.Set("single-process")
+	}
+	return l
+}
+
+// newStartLauncher builds the launcher for one start attempt. Sandboxed is the
+// default; unsandboxed adds --no-sandbox and, where the platform takes it,
+// --single-process — the environments that need one tend to need the other
+// (see singleProcessSupported in chrome_flags.go), and --single-process on a
+// platform that does not need it turns a renderer crash into a browser abort.
+func newStartLauncher(dataDir string, headless, unsandboxed bool, extensions []extensionInfo) *launcher.Launcher {
+	l := launcher.New().
+		Set("disable-gpu").
+		Leakless(false). // Keep Chrome alive after CLI exits
+		UserDataDir(dataDir).
+		Headless(headless)
+
+	l = applySandboxFlags(l, unsandboxed)
+
+	l = configureExperiments(l)
+
+	// When in non-headless mode, make sure that we show the startup window immediately
+	// (instead of showing a window only after calling "roddy open")
+	if !headless {
+		l = l.Delete("no-startup-window")
+	}
+
+	l = configureExtensions(l, headless, extensions)
+
+	if bin := os.Getenv("ROD_CHROME_BIN"); bin != "" {
+		l = l.Bin(bin)
+	}
+	return l
 }
 
 func cmdStart(args []string) {
@@ -514,31 +643,6 @@ func cmdStart(args []string) {
 
 	extensions := loadExtensions(opts.extensions)
 
-	l := launcher.New().
-		Set("no-sandbox").
-		Set("disable-gpu").
-		Leakless(false). // Keep Chrome alive after CLI exits
-		UserDataDir(dataDir).
-		Headless(headless)
-
-	if singleProcessSupported() {
-		l = l.Set("single-process") // Required for screenshots in gVisor/container environments
-	}
-
-	l = configureExperiments(l)
-
-	// When in non-headless mode, make sure that we show the startup window immediately
-	// (instead of showing a window only after calling "roddy open")
-	if !headless {
-		l = l.Delete("no-startup-window")
-	}
-
-	l = configureExtensions(l, headless, extensions)
-
-	if bin := os.Getenv("ROD_CHROME_BIN"); bin != "" {
-		l = l.Bin(bin)
-	}
-
 	// Detect authenticated proxy and launch helper if needed
 	var proxyPID, proxyPort int
 	if server, user, pass, needed := detectProxy(); needed {
@@ -552,31 +656,59 @@ func cmdStart(args []string) {
 		proxyPort = ln.Addr().(*net.TCPAddr).Port
 		ln.Close()
 
-		// Launch ourselves as the proxy helper in the background
+		// Launch ourselves as the proxy helper in the background. The auth
+		// header goes over stdin, not argv: argv is readable by every user on
+		// the machine via ps for the helper's whole (detached) lifetime. (The
+		// helper's environment still carries HTTPS_PROXY, which `ps eww` shows
+		// to its owner and to root.)
 		exe, _ := os.Executable()
-		cmd := exec.Command(exe, "_proxy",
-			strconv.Itoa(proxyPort), server, authHeader)
+		cmd := proxyHelperCommand(exe, proxyPort, server)
+		stdin, err := cmd.StdinPipe()
+		if err != nil {
+			fatal("failed to start proxy helper: %v", err)
+		}
 		setSysProcAttr(cmd)
 		if err := cmd.Start(); err != nil {
 			fatal("failed to start proxy helper: %v", err)
 		}
 		proxyPID = cmd.Process.Pid
+		if _, err := io.WriteString(stdin, authHeader+"\n"); err != nil {
+			fmt.Fprintf(os.Stderr, "stopping proxy helper (PID %d)\n", proxyPID)
+			signalPID(proxyPID)
+			fatal("failed to hand credentials to the proxy helper: %v", err)
+		}
+		_ = stdin.Close() // header is already through; a close error adds nothing
 		// Detach so it survives after we exit
 		cmd.Process.Release()
 
 		// Wait for the proxy to be ready
 		time.Sleep(500 * time.Millisecond)
 
-		l.Set("proxy-server", fmt.Sprintf("http://127.0.0.1:%d", proxyPort))
-		ignoreCertErrors = true // Proxy requires ignoring cert errors
+		// Chrome rejects the chain when the upstream proxy inspects TLS and
+		// re-signs, or when the environment lacks the root CAs
+		// (notes/claude-chrome-proxy/README.md). The helper itself is a
+		// transparent CONNECT tunnel and originates no cert error.
+		ignoreCertErrors = true
 		fmt.Printf("Auth proxy started (PID %d, port %d) -> %s\n", proxyPID, proxyPort, server)
 	}
 
-	if ignoreCertErrors {
-		l.Set("ignore-certificate-errors")
+	launch := func(unsandboxed bool) (*launcher.Launcher, string, error) {
+		l := newStartLauncher(dataDir, headless, unsandboxed, extensions)
+		if proxyPort > 0 {
+			l.Set("proxy-server", fmt.Sprintf("http://127.0.0.1:%d", proxyPort))
+		}
+		if ignoreCertErrors {
+			l.Set("ignore-certificate-errors")
+		}
+		u, err := l.Launch()
+		return l, u, err
 	}
 
-	debugURL, err := l.Launch()
+	unsandboxed, reason := launchUnsandboxed(opts.noSandbox, os.Geteuid(), inContainerEnv())
+	if reason != "" {
+		fmt.Fprintf(os.Stderr, "note: %s, launching with --no-sandbox\n", reason)
+	}
+	l, debugURL, unsandboxed, err := launchWithFallback(launch, unsandboxed, os.Stderr)
 	if err != nil {
 		// The proxy helper was spawned before the launch; without a state file
 		// recording its PID, nothing could ever stop it.
@@ -591,13 +723,14 @@ func cmdStart(args []string) {
 	pid := l.PID()
 
 	state := &State{
-		DebugURL:   debugURL,
-		ChromePID:  pid,
-		ActivePage: 0,
-		DataDir:    dataDir,
-		ProxyPID:   proxyPID,
-		ProxyPort:  proxyPort,
-		Extensions: extensions,
+		DebugURL:    debugURL,
+		ChromePID:   pid,
+		ActivePage:  0,
+		DataDir:     dataDir,
+		ProxyPID:    proxyPID,
+		ProxyPort:   proxyPort,
+		Extensions:  extensions,
+		Unsandboxed: unsandboxed,
 	}
 
 	if err := saveState(state); err != nil {
@@ -609,7 +742,11 @@ func cmdStart(args []string) {
 		fatal("failed to save state: %v", err)
 	}
 
-	fmt.Printf("Chrome started (PID %d)\n", pid)
+	if unsandboxed {
+		fmt.Printf("Chrome started (PID %d, sandbox off)\n", pid)
+	} else {
+		fmt.Printf("Chrome started (PID %d)\n", pid)
+	}
 	fmt.Printf("Debug URL: %s\n", debugURL)
 	for _, ext := range extensions {
 		fmt.Printf("Extension loaded: %s (%s)\n", ext.Name, ext.ID)
@@ -736,6 +873,11 @@ func cmdStatus(args []string) {
 	fmt.Printf("Debug URL: %s\n", s.DebugURL)
 	fmt.Printf("Pages: %d\n", len(pages))
 	fmt.Printf("Active page: %d\n", s.ActivePage)
+	if s.Unsandboxed {
+		// Nothing when sandboxed: state files written before the field existed
+		// decode as false, and "Sandbox: on" would be a guess there.
+		fmt.Println("Sandbox: off")
+	}
 	for _, ext := range s.Extensions {
 		fmt.Printf("Extension: %s (%s)\n", ext.Name, ext.ID)
 	}
@@ -2102,15 +2244,44 @@ func detectProxy() (server, user, pass string, needed bool) {
 	return server, user, pass, true
 }
 
-// cmdInternalProxy is a hidden subcommand: roddy _proxy <port> <upstream> <authHeader>
-// It runs a local auth proxy that forwards to the upstream proxy with credentials.
+// proxyHelperCommand builds the command that runs this binary as the auth
+// proxy helper. The credentials are absent by construction: they go over the
+// helper's stdin, never argv.
+func proxyHelperCommand(exe string, port int, server string) *exec.Cmd {
+	return exec.Command(exe, "_proxy", strconv.Itoa(port), server)
+}
+
+// readProxyAuthHeader reads one line — the Proxy-Authorization value — from
+// the helper's stdin and returns it with surrounding space trimmed.
+func readProxyAuthHeader(r io.Reader) (string, error) {
+	line, err := bufio.NewReader(r).ReadString('\n')
+	// ReadString returns the partial line alongside the error, so the error
+	// has to be checked first or a truncated credential passes for a whole
+	// one. EOF is not such an error — the writer closed without a newline.
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", err
+	}
+	if header := strings.TrimSpace(line); header != "" {
+		return header, nil
+	}
+	return "", errors.New("no auth header arrived on stdin")
+}
+
+// cmdInternalProxy is a hidden subcommand: roddy _proxy <port> <upstream>,
+// with the Proxy-Authorization header on stdin. It runs a local auth proxy
+// that forwards to the upstream proxy with credentials.
 func cmdInternalProxy(args []string) {
-	if len(args) < 3 {
-		fatal("usage: roddy _proxy <port> <upstream> <authHeader>")
+	// Exactly two: a caller still passing the header as argv[2] must fail
+	// loudly instead of hanging on an inherited stdin.
+	if len(args) != 2 {
+		fatal("usage: roddy _proxy <port> <upstream> (auth header on stdin)")
 	}
 	port := args[0]
 	upstream := args[1]
-	authHeader := args[2]
+	authHeader, err := readProxyAuthHeader(os.Stdin)
+	if err != nil {
+		fatal("proxy helper: %v", err)
+	}
 
 	listener, err := net.Listen("tcp", "127.0.0.1:"+port)
 	if err != nil {

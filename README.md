@@ -14,7 +14,7 @@ This fork exists to keep those fixes available and installable. It is not a host
 ### What Roddy adds over upstream
 
 - **`--extension` flag** — load unpacked extension directories or packed `.crx`/`.zip` archives into a headless session, and list them with `roddy extensions`. ([upstream PR #52](https://github.com/simonw/rodney/pull/52))
-- **Browser-process crash fixes** — stops Chromium running in-development features that abort the browser, and skips `--single-process` on macOS where it crashes on startup. ([upstream PR #54](https://github.com/simonw/rodney/pull/54))
+- **Browser-process crash fixes** — stops Chromium running in-development features that abort the browser, and reserves `--single-process` for unsandboxed launches (containers, gVisor), never using it on macOS where it aborts the browser as soon as a page touches `navigator.mediaDevices`. ([upstream PR #54](https://github.com/simonw/rodney/pull/54))
 - **Screenshot reliability** — raises the target before capturing, fixing captures that timed out when the page was not in the foreground. ([upstream PR #55](https://github.com/simonw/rodney/pull/55))
 
 ### Migrating from Rodney
@@ -111,10 +111,28 @@ Each CLI invocation is a short-lived process. Chrome runs independently and tabs
 roddy start              # Launch headless Chrome
 roddy start --show       # Launch with visible browser window
 roddy start --insecure   # Launch with TLS errors ignored (-k shorthand)
+roddy start --no-sandbox # Launch without Chrome's sandbox (containers, gVisor)
 roddy connect host:9222  # Connect to existing Chrome on remote debug port
 roddy status             # Show browser info and active page
 roddy stop               # Shut down Chrome
 ```
+
+Chrome runs with its sandbox on by default. Running as root implies
+`--no-sandbox` — Chrome refuses to sandbox there — and so does a container
+detected by its marker files or environment (Docker, Podman, Kubernetes, and
+gVisor under any of them), where the kernel support Chrome's sandbox needs is
+usually absent. Both are decided up front, with a note on stderr and no failed
+first attempt; an unsandboxed launch also gets `--single-process` where the
+platform takes it, which those environments need for screenshots — unless
+extensions are loaded, which drops it again (it breaks them).
+
+The detection is a marker check, not a kernel probe, so containers it does not
+recognise (LXC, systemd-nspawn, containerd outside Kubernetes) get the ordinary
+sandboxed attempt. That attempt, if it fails *for a sandbox reason* — Chrome's
+own stderr naming the cause, e.g. "Failed to move to new namespace" or "No
+usable sandbox!" — retries once with `--no-sandbox` and says so; any other
+failure is reported as-is rather than silently downgraded. `--no-sandbox` is
+the explicit path when you already know the sandbox will not come up.
 
 ### Browser extensions
 
@@ -722,7 +740,7 @@ Global state is stored in `~/.roddy/state.json` with Chrome user data in `~/.rod
 In environments with authenticated HTTP proxies (e.g., `HTTPS_PROXY=http://user:pass@host:port`), `roddy start` automatically:
 
 1. Detects the proxy credentials from environment variables
-2. Launches a local forwarding proxy that injects `Proxy-Authorization` headers into CONNECT requests
+2. Launches a local forwarding proxy that injects `Proxy-Authorization` headers into CONNECT requests (the credentials are handed to it over stdin, so they are not in its argv, which `ps` shows to every user on the machine — its environment still carries `HTTPS_PROXY`, visible to the owner and root via `ps eww`)
 3. Configures Chrome to use the local proxy
 
 This is necessary because Chrome cannot natively authenticate to proxies during HTTPS tunnel (CONNECT) establishment. The local proxy runs as a background process and is automatically cleaned up by `roddy stop`.
@@ -749,7 +767,7 @@ The tool uses the [rod](https://github.com/go-rod/rod) Go library which communic
 
 | Command | Arguments | Description |
 |---|---|---|
-| `start` | `[--show] [--insecure\|-k]` | Launch Chrome (headless by default, `--show` for visible) |
+| `start` | `[--show] [--insecure\|-k] [--no-sandbox]` | Launch Chrome (headless by default, `--show` for visible) |
 | `connect` | `<host:port>` | Connect to existing Chrome on remote debug port |
 | `stop` | | Shut down Chrome |
 | `status` | | Show browser status |
