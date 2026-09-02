@@ -4,8 +4,7 @@ import (
 	"github.com/go-rod/rod/lib/launcher"
 )
 
-// singleProcessSupported reports whether --single-process is safe to pass on
-// goos.
+// singleProcessSupported reports whether --single-process is safe to pass on goos.
 //
 // The flag collapses Chromium's renderer, GPU and utility services into the
 // browser process. It is there because the multi-process compositor hangs under

@@ -44,9 +44,9 @@ func (e *extensionList) Set(v string) error {
 // dangerous: it collapses all of those into one OS process (measured: 0 child
 // processes and 205 threads, versus 10 and 59 without it), so any CHECK failure
 // or bad access anywhere takes down the entire browser rather than one renderer.
-// It is dropped here only; an unsandboxed launch without --extension keeps
-// what applySandboxFlags set, preserving the screenshot behaviour it was added
-// for in gVisor/container environments.
+// useSingleProcess already leaves it off (and refuses an explicit
+// --single-process) when extensions load; deleting here too keeps that true for
+// any launcher handed in — the extension test fixtures set it unconditionally.
 func configureExtensions(l *launcher.Launcher, headless bool, extensions []extensionInfo) *launcher.Launcher {
 	if len(extensions) == 0 {
 		return l

@@ -97,8 +97,9 @@ type State struct {
 	ProxyPID   int    `json:"proxy_pid,omitempty"`  // PID of auth proxy helper
 	ProxyPort  int    `json:"proxy_port,omitempty"` // local port of auth proxy
 
-	Unsandboxed bool `json:"unsandboxed,omitempty"` // Chrome launched with --no-sandbox
-	Insecure    bool `json:"insecure,omitempty"`    // Chrome launched with --ignore-certificate-errors
+	Unsandboxed   bool `json:"unsandboxed,omitempty"`    // Chrome launched with --no-sandbox
+	SingleProcess bool `json:"single_process,omitempty"` // Chrome launched with --single-process
+	Insecure      bool `json:"insecure,omitempty"`       // Chrome launched with --ignore-certificate-errors
 
 	Extensions []extensionInfo `json:"extensions,omitempty"` // extensions passed to --load-extension
 }
@@ -111,6 +112,9 @@ func sessionFlagNotes(s *State) string {
 	var notes []string
 	if s.Unsandboxed {
 		notes = append(notes, "sandbox off")
+	}
+	if s.SingleProcess {
+		notes = append(notes, "single process")
 	}
 	if s.Insecure {
 		notes = append(notes, "certificate errors ignored")
@@ -462,13 +466,13 @@ func bringToFront(page *rod.Page) {
 
 // --- Commands ---
 
-const startUsage = "usage: roddy start [--show] [--insecure] [--no-sandbox] [--single-process | --no-single-process] [--extension PATH] [--no-extension]"
+const startUsage = "usage: roddy start [--show] [--insecure] [--no-sandbox] [--extension PATH] [--no-extension] [--single-process | --no-single-process]"
 
 // singleProcessMode is the --single-process/--no-single-process choice.
 type singleProcessMode int
 
 const (
-	singleProcessAuto singleProcessMode = iota // derive it from the sandbox decision
+	singleProcessAuto singleProcessMode = iota // neither flag given; useSingleProcess derives it
 	singleProcessOn
 	singleProcessOff
 )
@@ -478,9 +482,9 @@ type startOptions struct {
 	ignoreCertErrors bool
 	headless         bool
 	extensions       []string
-	noExtension      bool // opt out of WXT auto-detection
-	noSandbox        bool // launch Chrome without its sandbox
-	singleProcess    singleProcessMode
+	noExtension      bool              // opt out of WXT auto-detection
+	noSandbox        bool              // launch Chrome without its sandbox
+	singleProcess    singleProcessMode // --single-process/--no-single-process, or derived
 }
 
 // parseStartArgs parses the flags for the "start" command.
@@ -598,15 +602,15 @@ func launchWithFallback(launch func(unsandboxed bool) (*launcher.Launcher, strin
 }
 
 // useSingleProcess resolves the --single-process choice for one launch
-// attempt. The auto default is the derived behaviour --single-process shipped
-// with: it rides along with an unsandboxed launch, since the environments that
-// need one tend to need the other (see singleProcessSupported in
-// chrome_flags.go), and --single-process where nothing needs it turns a
-// renderer crash into a browser abort.
+// attempt. Auto rides along with an unsandboxed launch, on platforms that take
+// the flag and only without extensions: the environments that need one tend to
+// need the other (see singleProcessSupported in chrome_flags.go), and
+// --single-process where nothing needs it turns a renderer crash into a browser
+// abort.
 //
-// An explicit --single-process is rejected rather than quietly dropped;
-// --no-single-process never errors, so it stays a no-op wherever the flag was
-// not going to be set anyway.
+// An explicit --single-process is rejected rather than quietly dropped, in the
+// order below; --no-single-process never errors and is a no-op wherever the
+// flag was not going on anyway.
 func useSingleProcess(mode singleProcessMode, unsandboxed, hasExtensions, extensionsFromWXT bool, goos string) (bool, error) {
 	switch mode {
 	case singleProcessOff:
@@ -624,8 +628,8 @@ func useSingleProcess(mode singleProcessMode, unsandboxed, hasExtensions, extens
 			return false, errors.New("--single-process cannot be combined with extensions: they break under it")
 		}
 		if !unsandboxed {
-			// Chrome barely supports a sandboxed single process; the flag only
-			// ever goes on an unsandboxed launch.
+			// Keeps the auto default's invariant: --single-process only ever
+			// rides on an unsandboxed launch.
 			return false, errors.New("--single-process requires --no-sandbox")
 		}
 		return true, nil
@@ -634,17 +638,17 @@ func useSingleProcess(mode singleProcessMode, unsandboxed, hasExtensions, extens
 }
 
 // applySandboxFlags puts the sandbox and single-process decisions on a
-// launcher. Both branches delete rather than omit their flag: launcher.New()
-// seeds --no-sandbox inside containers rod detects, so deleting keeps
-// "sandboxed" meaning the same on any launcher handed in, whatever the caller
-// decided. cmdStart's shipped path sends detected containers down the
-// unsandboxed branch, so it does not depend on this.
+// launcher. An off decision deletes its flag rather than omitting it:
+// launcher.New() seeds --no-sandbox inside containers rod detects, so deleting
+// keeps "sandboxed" meaning the same on any launcher handed in, whatever the
+// caller decided. --single-process only ever rides on an unsandboxed launch, so
+// the sandboxed branch drops it too. cmdStart's shipped path sends detected
+// containers down the unsandboxed branch, so it does not depend on this.
 func applySandboxFlags(l *launcher.Launcher, unsandboxed, singleProcess bool) *launcher.Launcher {
-	if unsandboxed {
-		l = l.Set("no-sandbox")
-	} else {
-		l = l.Delete("no-sandbox")
+	if !unsandboxed {
+		return l.Delete("no-sandbox").Delete("single-process")
 	}
+	l = l.Set("no-sandbox")
 	if singleProcess {
 		return l.Set("single-process")
 	}
@@ -662,8 +666,9 @@ type startLaunch struct {
 	ignoreCertErrors bool
 }
 
-// newStartLauncher builds the launcher for one start attempt. Sandboxed is the
-// default; useSingleProcess decides c.singleProcess.
+// newStartLauncher builds the launcher for one start attempt; the zero-value c
+// is a sandboxed multi-process launch. configureExtensions runs after
+// applySandboxFlags and drops --single-process again when extensions load.
 func newStartLauncher(c startLaunch) *launcher.Launcher {
 	l := launcher.New().
 		Set("disable-gpu").
@@ -699,6 +704,22 @@ func newStartLauncher(c startLaunch) *launcher.Launcher {
 	return l
 }
 
+// startAttemptLauncher returns the builder launchWithFallback drives: each
+// attempt re-decides --single-process for its own sandbox mode, so the retry
+// that flips unsandboxed to true flips the auto default with it.
+func startAttemptLauncher(base startLaunch, mode singleProcessMode, extensionsFromWXT bool, goos string) func(unsandboxed bool) (*launcher.Launcher, error) {
+	return func(unsandboxed bool) (*launcher.Launcher, error) {
+		singleProcess, err := useSingleProcess(mode, unsandboxed, len(base.extensions) > 0, extensionsFromWXT, goos)
+		if err != nil {
+			return nil, err
+		}
+		c := base
+		c.unsandboxed = unsandboxed
+		c.singleProcess = singleProcess
+		return newStartLauncher(c), nil
+	}
+}
+
 func cmdStart(args []string) {
 	opts, err := parseStartArgs(args)
 	if err != nil {
@@ -708,9 +729,7 @@ func cmdStart(args []string) {
 	// A WXT project's build output is the extension: load it unasked unless the
 	// user already decided with --extension or --no-extension. The unpack root
 	// is loadExtensions', which resolves the same paths later.
-	askedForExtensions := len(opts.extensions) > 0
-	opts, wxtNotice, wxtHint := wxtStart(opts, ".", filepath.Join(stateDir(), "extensions"))
-	wxtLoaded := !askedForExtensions && len(opts.extensions) > 0
+	opts, wxtLoaded, wxtNotice, wxtHint := wxtStart(opts, ".", filepath.Join(stateDir(), "extensions"))
 	if wxtHint != "" {
 		fmt.Fprintln(os.Stderr, wxtHint)
 	} else if wxtNotice != "" {
@@ -719,6 +738,14 @@ func cmdStart(args []string) {
 			wxtTipWanted(activeScopeMode, os.Getenv("RODDY_HOME"), stateDir(), filepath.Join(wd, ".roddy")) {
 			fmt.Println(wxtLocalTip)
 		}
+	}
+
+	unsandboxed, sandboxReason := launchUnsandboxed(opts.noSandbox, os.Geteuid(), inContainerEnv())
+	// Validated before the running session is touched, before any archive is
+	// unpacked and before the proxy helper is spawned: a refused
+	// --single-process must leave all of them exactly as they were.
+	if _, err := useSingleProcess(opts.singleProcess, unsandboxed, len(opts.extensions) > 0, wxtLoaded, runtime.GOOS); err != nil {
+		fatal("%s", err)
 	}
 
 	// Check if already running
@@ -741,13 +768,6 @@ func cmdStart(args []string) {
 	}
 
 	extensions := loadExtensions(opts.extensions)
-
-	unsandboxed, sandboxReason := launchUnsandboxed(opts.noSandbox, os.Geteuid(), inContainerEnv())
-	// Validated here, before anything is spawned: an explicit --single-process
-	// that cannot be honoured must not leave a proxy helper or a browser behind.
-	if _, err := useSingleProcess(opts.singleProcess, unsandboxed, len(extensions) > 0, wxtLoaded, runtime.GOOS); err != nil {
-		fatal("%s", err)
-	}
 
 	dataDir := filepath.Join(stateDir(), "chrome-data")
 	os.MkdirAll(dataDir, 0755)
@@ -824,23 +844,20 @@ func cmdStart(args []string) {
 		fmt.Printf("Auth proxy started (PID %d, port %d) -> %s\n", proxyPID, proxyPort, server)
 	}
 
+	build := startAttemptLauncher(startLaunch{
+		dataDir:          dataDir,
+		headless:         opts.headless,
+		extensions:       extensions,
+		proxyPort:        proxyPort,
+		ignoreCertErrors: opts.ignoreCertErrors,
+	}, opts.singleProcess, wxtLoaded, runtime.GOOS)
 	launch := func(unsandboxed bool) (*launcher.Launcher, string, error) {
-		// Re-decided per attempt: launchWithFallback's retry flips unsandboxed
-		// to true, and the auto default flips with it. Only the up-front
-		// decision can fail, so this one never does.
-		singleProcess, err := useSingleProcess(opts.singleProcess, unsandboxed, len(extensions) > 0, wxtLoaded, runtime.GOOS)
+		l, err := build(unsandboxed)
 		if err != nil {
-			fatal("%s", err)
+			// Unreachable after the up-front validation, and returned rather
+			// than fatal so the proxy helper spawned above is still stopped.
+			return nil, "", err
 		}
-		l := newStartLauncher(startLaunch{
-			dataDir:          dataDir,
-			headless:         opts.headless,
-			unsandboxed:      unsandboxed,
-			singleProcess:    singleProcess,
-			extensions:       extensions,
-			proxyPort:        proxyPort,
-			ignoreCertErrors: opts.ignoreCertErrors,
-		})
 		u, err := l.Launch()
 		return l, u, err
 	}
@@ -870,7 +887,10 @@ func cmdStart(args []string) {
 		ProxyPort:   proxyPort,
 		Extensions:  extensions,
 		Unsandboxed: unsandboxed,
-		Insecure:    opts.ignoreCertErrors,
+		// Read off the winning attempt's launcher: configureExtensions drops
+		// --single-process again after useSingleProcess decided it.
+		SingleProcess: l.Has("single-process"),
+		Insecure:      opts.ignoreCertErrors,
 	}
 
 	if err := saveState(state); err != nil {
