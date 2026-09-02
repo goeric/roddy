@@ -668,9 +668,10 @@ func cmdStart(args []string) {
 		// The helper outlives this process, so its stderr cannot be ours: a
 		// fatal() inside it lands only here, read back by proxyHelperFailure.
 		// 0600 keeps it out of other users' reach.
-		logFile, err := os.OpenFile(proxyLogPath(), os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
+		logPath := proxyLogPath()
+		logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
 		if err != nil {
-			fatal("failed to open proxy helper log %s: %v", proxyLogPath(), err)
+			fatal("failed to open proxy helper log %s: %v", logPath, err)
 		}
 		// os.Pipe, not cmd.StdoutPipe: Wait closes a StdoutPipe as soon as the
 		// child exits, racing the read of the port line.
@@ -678,7 +679,8 @@ func cmdStart(args []string) {
 		if err != nil {
 			fatal("failed to start proxy helper: %v", err)
 		}
-		cmd.Stdout, cmd.Stderr = announceW, logFile
+		cmd.Stdout = announceW
+		cmd.Stderr = logFile
 		setSysProcAttr(cmd)
 		if err := cmd.Start(); err != nil {
 			fatal("failed to start proxy helper: %v", err)
@@ -699,7 +701,8 @@ func cmdStart(args []string) {
 
 		if _, err := io.WriteString(stdin, authHeader+"\n"); err != nil {
 			stopProxyHelper(proxyPID, proxyExited, os.Stderr)
-			fatal("%s", proxyHelperFailure(fmt.Errorf("failed to hand credentials to the proxy helper: %w", err), proxyLogPath()))
+			handoff := fmt.Errorf("failed to hand credentials to the proxy helper: %w", err)
+			fatal("%s", proxyHelperFailure(handoff, logPath))
 		}
 		_ = stdin.Close() // header is already through; a close error adds nothing
 
@@ -711,7 +714,7 @@ func cmdStart(args []string) {
 			if !errors.Is(err, errProxyHelperExited) {
 				stopProxyHelper(proxyPID, proxyExited, os.Stderr)
 			}
-			fatal("%s", proxyHelperFailure(err, proxyLogPath()))
+			fatal("%s", proxyHelperFailure(err, logPath))
 		}
 
 		// Chrome rejects the chain when the upstream proxy inspects TLS and
@@ -2278,7 +2281,7 @@ func detectProxy() (server, user, pass string, needed bool) {
 // proxyHelperCommand builds the command that runs this binary as the auth
 // proxy helper. The credentials are absent by construction: they go over the
 // helper's stdin, never argv.
-func proxyHelperCommand(exe string, server string) *exec.Cmd {
+func proxyHelperCommand(exe, server string) *exec.Cmd {
 	return exec.Command(exe, "_proxy", server)
 }
 
@@ -2326,15 +2329,10 @@ func proxyHelperFailure(err error, logPath string) string {
 func helperOutputSummary(out string) string {
 	lines := strings.Split(out, "\n")
 	lines[0] = strings.TrimPrefix(lines[0], "error: ")
-	truncated := false
 	if len(lines) > proxyLogInlineLines {
-		lines, truncated = lines[:proxyLogInlineLines], true
+		return strings.Join(lines[:proxyLogInlineLines], " | ") + " | …"
 	}
-	summary := strings.Join(lines, " | ")
-	if truncated {
-		summary += " | …"
-	}
-	return summary
+	return strings.Join(lines, " | ")
 }
 
 // errProxyHelperExited marks the failures where the helper is already gone, so

@@ -1827,11 +1827,11 @@ func TestProxyHelperFailure_InlinesTheHelperOutput(t *testing.T) {
 
 func TestProxyHelperFailure_CapsTheInlinedOutput(t *testing.T) {
 	logPath := filepath.Join(t.TempDir(), "proxy.log")
-	var log strings.Builder
+	var logText strings.Builder
 	for i := 1; i <= proxyLogInlineLines+2; i++ {
-		fmt.Fprintf(&log, "line %d\n", i)
+		fmt.Fprintf(&logText, "line %d\n", i)
 	}
-	if err := os.WriteFile(logPath, []byte(log.String()), 0600); err != nil {
+	if err := os.WriteFile(logPath, []byte(logText.String()), 0600); err != nil {
 		t.Fatalf("write log: %v", err)
 	}
 	msg := proxyHelperFailure(errors.New("boom"), logPath)
