@@ -128,6 +128,11 @@ first attempt; an unsandboxed launch also gets `--single-process` where the
 platform takes it, which those environments need for screenshots — unless
 extensions are loaded, which drops it again (it breaks them).
 
+Site Isolation is on too: rod's launcher defaults turn it off, roddy turns it
+back on, so cross-site frames get renderer processes of their own — a second
+boundary behind the sandbox. It is moot under `--single-process`, where there is
+only one process.
+
 `--single-process` and `--no-single-process` override that derived default.
 `--no-single-process` is always accepted, and is simply a no-op where the flag
 was not going on anyway; it is how you get an unsandboxed *multi-process*

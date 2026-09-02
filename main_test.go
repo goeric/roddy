@@ -63,6 +63,8 @@ func TestMain(m *testing.M) {
 	mux.HandleFunc("/sw-page", handleSWPage)
 	mux.HandleFunc("/page-sw.js", handlePageSW)
 	mux.HandleFunc("/logs-page", handleLogsPage)
+	mux.HandleFunc("/isolation", handleIsolationParent)
+	mux.HandleFunc("/isolation/child", handleIsolationChild)
 	// The "/" handler answers every unregistered path, so a 404 has to be one.
 	mux.HandleFunc("/missing-resource", http.NotFound)
 	server := httptest.NewServer(mux)
@@ -1595,6 +1597,49 @@ func TestNewStartLauncher_ExtensionsOutrankSingleProcess(t *testing.T) {
 	}
 }
 
+// Site Isolation is the layer behind the renderer sandbox, and rod's launcher
+// defaults switch it off. The other --disable-features values still have to
+// reach Chrome, whichever configure* helper contributed them.
+func TestNewStartLauncher_KeepsSiteIsolation(t *testing.T) {
+	l := newStartLauncher(startLaunch{dataDir: t.TempDir(), headless: true})
+
+	if l.Has("disable-site-isolation-trials") {
+		t.Error("--disable-site-isolation-trials set on a default launch")
+	}
+	got := features(l)
+	if strings.Contains(got, "site-per-process") {
+		t.Errorf("disable-features = %q, want it NOT to contain site-per-process", got)
+	}
+	for _, want := range []string{"TranslateUI", "HistoryEmbeddings"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("disable-features = %q, want it to contain %q", got, want)
+		}
+	}
+}
+
+// configureExtensions appends after configureSiteIsolation runs: its value must
+// survive, and site-per-process must not come back with it.
+func TestNewStartLauncher_KeepsSiteIsolationWithExtensions(t *testing.T) {
+	l := newStartLauncher(startLaunch{
+		dataDir:    t.TempDir(),
+		headless:   true,
+		extensions: []extensionInfo{{Dir: "/tmp/ext"}},
+	})
+
+	if l.Has("disable-site-isolation-trials") {
+		t.Error("--disable-site-isolation-trials set on a launch with an extension")
+	}
+	got := features(l)
+	if strings.Contains(got, "site-per-process") {
+		t.Errorf("disable-features = %q, want it NOT to contain site-per-process", got)
+	}
+	for _, want := range []string{"TranslateUI", "HistoryEmbeddings", "DisableLoadExtensionCommandLineSwitch"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("disable-features = %q, want it to contain %q", got, want)
+		}
+	}
+}
+
 // The proxy helper is a transparent CONNECT tunnel that never terminates TLS,
 // so a proxied launch must keep Chrome's certificate validation.
 func TestNewStartLauncher_ProxyKeepsCertValidation(t *testing.T) {
@@ -1763,6 +1808,119 @@ func TestUnsandboxedMultiProcessLaunch(t *testing.T) {
 	}
 	if info.Title != "Test Page" {
 		t.Errorf("title = %q, want %q", info.Title, "Test Page")
+	}
+}
+
+// A cross-site iframe renders in a process of its own under Site Isolation,
+// which CDP surfaces as a target of type "iframe" that Target.getTargets lists
+// with no Target.setAutoAttach. Unsandboxed and multi-process on purpose: the
+// sandbox is a separate boundary and needs a kernel CI may not have, while
+// --single-process (env.browser, and start's auto default on Linux) makes the
+// process model moot.
+func TestSiteIsolation_CrossSiteIframeIsItsOwnTarget(t *testing.T) {
+	assertIsolation(t, isolationLauncher(t), true)
+}
+
+// The control for the test above: --disable-site-isolation-trials, the rod
+// default that does the disabling here, put back on the launcher roddy ships.
+// Its "no iframe target" assertion would pass just as well on an iframe that
+// never loaded, so the frame-tree check proves the load first.
+func TestSiteIsolation_TrialsFlagAloneTurnsItOff(t *testing.T) {
+	assertIsolation(t, isolationLauncher(t).Set("disable-site-isolation-trials"), false)
+}
+
+// rod's other default, disable-features=site-per-process, is inert: Chromium
+// 128 spells the feature SitePerProcess, so the lowercase value matches nothing
+// and isolation stays on. A Chromium that honours it fails this test — that is
+// the point, the CLAUDE.md fact then has to be revisited.
+func TestSiteIsolation_RodsSitePerProcessSpellingIsInert(t *testing.T) {
+	assertIsolation(t, isolationLauncher(t).Append("disable-features", "site-per-process"), true)
+}
+
+// isolationLauncher is what roddy ships for an unsandboxed multi-process start;
+// the tests above differ only in the flags they put back and what they expect.
+func isolationLauncher(t *testing.T) *launcher.Launcher {
+	t.Helper()
+	return newStartLauncher(startLaunch{dataDir: t.TempDir(), headless: true, unsandboxed: true})
+}
+
+// assertIsolation drives the cross-site iframe fixture on l and asserts whether
+// Site Isolation is on: an OOPIF is a browser-level target of type "iframe" and
+// is absent from the parent's frame tree, an in-process child the mirror image.
+func assertIsolation(t *testing.T, l *launcher.Launcher, want bool) {
+	t.Helper()
+	page, cleanup := launcherPage(t, l)
+	defer cleanup()
+
+	if err := page.Navigate(env.server.URL + "/isolation"); err != nil {
+		t.Fatalf("navigate: %v", err)
+	}
+	if err := page.WaitLoad(); err != nil {
+		t.Fatalf("wait for load: %v", err)
+	}
+
+	if !want {
+		// An in-process child shows in the parent's frame tree where an OOPIF
+		// does not, so this is the proof the iframe loaded at all.
+		frames := waitURLs(func() []string { return childFrames(t, page) })
+		if len(frames) != 1 || !strings.Contains(frames[0], "/isolation/child") {
+			t.Fatalf("child frames = %q, want the fixture's iframe", frames)
+		}
+		if got := iframeTargets(t, page.Browser()); len(got) > 0 {
+			t.Errorf("iframe targets = %q, want none with site isolation off", got)
+		}
+		return
+	}
+	targets := waitURLs(func() []string { return iframeTargets(t, page.Browser()) })
+	if len(targets) != 1 || !strings.Contains(targets[0], "/isolation/child") {
+		// The frame tree tells the two ways this fails apart: a child listed
+		// there is an in-process iframe (isolation off), no child at all is a
+		// fixture that never loaded one.
+		t.Errorf("iframe targets = %q, want one for the cross-site child; child frames = %q",
+			targets, childFrames(t, page))
+	}
+}
+
+// iframeTargets returns the URLs of the browser's out-of-process iframes.
+func iframeTargets(t *testing.T, b *rod.Browser) []string {
+	t.Helper()
+	res, err := proto.TargetGetTargets{}.Call(b)
+	if err != nil {
+		t.Fatalf("get targets: %v", err)
+	}
+	var urls []string
+	for _, info := range res.TargetInfos {
+		if info.Type == "iframe" {
+			urls = append(urls, info.URL)
+		}
+	}
+	return urls
+}
+
+// childFrames returns the URLs of the page's in-process child frames.
+func childFrames(t *testing.T, p *rod.Page) []string {
+	t.Helper()
+	tree, err := proto.PageGetFrameTree{}.Call(p)
+	if err != nil {
+		t.Fatalf("get frame tree: %v", err)
+	}
+	var urls []string
+	for _, child := range tree.FrameTree.ChildFrames {
+		urls = append(urls, child.Frame.URL)
+	}
+	return urls
+}
+
+// waitURLs polls list for a non-empty result, up to 5s, and returns what it
+// last saw. The OOPIF target is the browser's news, not the page's, so the
+// parent's load event does not order it.
+func waitURLs(list func() []string) []string {
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if urls := list(); len(urls) > 0 || time.Now().After(deadline) {
+			return urls
+		}
+		time.Sleep(25 * time.Millisecond)
 	}
 }
 
@@ -2546,6 +2704,34 @@ func handleLogsPage(w http.ResponseWriter, r *http.Request) {
     setTimeout(() => { throw new Error("fixture boom"); }, 50);
   </script>
 </body>
+</html>`))
+}
+
+// The child is framed from localhost while the server is reached as 127.0.0.1:
+// both names hit this one listener, but they are different sites, so under Site
+// Isolation the child renders out of process.
+func handleIsolationParent(w http.ResponseWriter, r *http.Request) {
+	_, port, err := net.SplitHostPort(r.Host)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html")
+	fmt.Fprintf(w, `<!DOCTYPE html>
+<html lang="en">
+<head><title>Isolation Parent</title></head>
+<body>
+  <iframe src="http://localhost:%s/isolation/child"></iframe>
+</body>
+</html>`, port)
+}
+
+func handleIsolationChild(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html")
+	w.Write([]byte(`<!DOCTYPE html>
+<html lang="en">
+<head><title>Isolation Child</title></head>
+<body><p id="child">child</p></body>
 </html>`))
 }
 

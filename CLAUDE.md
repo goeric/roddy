@@ -40,6 +40,11 @@ rod v0.116.2:
 - `Page.Eval` CALLS a function literal; raw `Runtime.evaluate` does not — wrap
   expressions in an IIFE `(() => { return (expr); })()` or `{a: 1}` parses as a
   labelled block.
+- `launcher.New()` turns Site Isolation off with `--disable-site-isolation-trials`.
+  It also lists `site-per-process` in `disable-features`, which is INERT on the
+  pinned Chromium 128 (the feature is spelled `SitePerProcess`; measured in both
+  headless modes) — `configureSiteIsolation` removes both, the second only for
+  other Chrome builds.
 
 Chrome (pinned Chromium 128 via rod's cache):
 - Unpacked-extension IDs are a hash of the absolute path (a-p alphabet), so IDs
@@ -86,6 +91,17 @@ Chrome (pinned Chromium 128 via rod's cache):
   fetches through browser-level interception after all — so a test browser
   missing configureExperiments (as baseLauncher was) passes tests the shipped
   configuration fails.
+- Site Isolation shows up in CDP as targets: a cross-site iframe (the fixture
+  frames `localhost` from a `127.0.0.1` page — different sites, one listener)
+  is listed by browser-level `Target.getTargets` as type `iframe`, with no
+  `Target.setAutoAttach`, in old headless (the suite) and new headless (spike).
+  It is usually there by the parent's load event but not ordered by it — poll
+  (`waitIframeTargets`). The parent's `Page.getFrameTree` then does NOT list
+  the child; with isolation off the mirror image holds. The `iframe` target
+  still appears under `--single-process` (spike; the security boundary is gone,
+  the target is not). Under the stub's browser-level `Fetch.enable` the OOPIF's
+  document request pauses like any other and the OOPIF does not auto-attach
+  (spike).
 - rod's `Browser.Connect` ends with `SetDiscoverTargets{Discover: true}`, so
   the TargetCreated replay of existing targets fires before any EachEvent
   subscription exists and a later re-call is a no-transition no-op that

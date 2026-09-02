@@ -38,10 +38,10 @@ func TestConfigureExperiments_DisablesHistoryEmbeddings(t *testing.T) {
 // rod disables features of its own, and configureExtensions appends one more.
 // Setting rather than appending would silently re-enable them.
 func TestConfigureExperiments_KeepsExistingDisabledFeatures(t *testing.T) {
-	l := configureExperiments(launcher.New().Set("disable-features", "site-per-process", "TranslateUI"))
+	l := configureExperiments(launcher.New().Set("disable-features", "SomeRodDefault", "TranslateUI"))
 
 	got := features(l)
-	for _, want := range []string{"site-per-process", "TranslateUI", "HistoryEmbeddings"} {
+	for _, want := range []string{"SomeRodDefault", "TranslateUI", "HistoryEmbeddings"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("disable-features = %q, want it to contain %q", got, want)
 		}
@@ -51,14 +51,56 @@ func TestConfigureExperiments_KeepsExistingDisabledFeatures(t *testing.T) {
 // Later callers append to the same flag; the values must accumulate rather than
 // replace each other.
 func TestConfigureExperiments_LeavesRoomForLaterAppends(t *testing.T) {
-	l := configureExperiments(launcher.New().Set("disable-features", "site-per-process"))
+	l := configureExperiments(launcher.New().Set("disable-features", "SomeRodDefault"))
 	l = l.Append("disable-features", "SomeLaterFeature")
 
 	got := features(l)
-	for _, want := range []string{"site-per-process", "HistoryEmbeddings", "SomeLaterFeature"} {
+	for _, want := range []string{"SomeRodDefault", "HistoryEmbeddings", "SomeLaterFeature"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("disable-features = %q, want it to contain %q", got, want)
 		}
+	}
+}
+
+// launcher.New() sets two Site Isolation flags; both have to go — the trials
+// one because it is what disables isolation on the pinned Chromium, the other
+// for a ROD_CHROME_BIN browser that honours it — and the rest of
+// --disable-features has to survive.
+func TestConfigureSiteIsolation_UndoesBothRodDefaults(t *testing.T) {
+	l := configureSiteIsolation(launcher.New())
+
+	if l.Has("disable-site-isolation-trials") {
+		t.Error("--disable-site-isolation-trials survived; it disables site isolation")
+	}
+	got := features(l)
+	if strings.Contains(got, "site-per-process") {
+		t.Errorf("disable-features = %q, want it NOT to contain site-per-process", got)
+	}
+	if !strings.Contains(got, "TranslateUI") {
+		t.Errorf("disable-features = %q, want it to keep TranslateUI", got)
+	}
+}
+
+// Filtering, not rewriting: values other callers appended stay put whichever
+// order the configure* helpers run in.
+func TestConfigureSiteIsolation_KeepsOtherDisabledFeatures(t *testing.T) {
+	l := configureSiteIsolation(launcher.New().Set("disable-features", "site-per-process", "SomeLaterFeature"))
+
+	got := features(l)
+	if strings.Contains(got, "site-per-process") {
+		t.Errorf("disable-features = %q, want it NOT to contain site-per-process", got)
+	}
+	if !strings.Contains(got, "SomeLaterFeature") {
+		t.Errorf("disable-features = %q, want it to keep SomeLaterFeature", got)
+	}
+}
+
+// An emptied flag is deleted rather than passed as --disable-features=.
+func TestConfigureSiteIsolation_DeletesAnEmptiedFlag(t *testing.T) {
+	l := configureSiteIsolation(launcher.New().Set("disable-features", "site-per-process"))
+
+	if l.Has("disable-features") {
+		t.Errorf("disable-features = %q, want the flag deleted", features(l))
 	}
 }
 

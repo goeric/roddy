@@ -51,3 +51,37 @@ func configureExperiments(l *launcher.Launcher) *launcher.Launcher {
 	return l.Set("disable-field-trial-config").
 		Append("disable-features", "HistoryEmbeddings")
 }
+
+// configureSiteIsolation puts Chromium's Site Isolation back.
+//
+// launcher.New() sets --disable-site-isolation-trials, which turns it off, and
+// lists "site-per-process" in disable-features (puppeteer's 2018 OOPIF
+// workaround, puppeteer/puppeteer#2548) — inert on the pinned Chromium 128,
+// whose feature is spelled SitePerProcess, but filtered out anyway for a
+// ROD_CHROME_BIN browser of another vintage. With isolation off one renderer
+// hosts documents from several sites, so a compromised renderer reads them all.
+//
+// disable-features is filtered rather than rewritten because
+// configureExperiments and configureExtensions append values of their own; the
+// order the three run in must not matter. --single-process leaves one process
+// regardless.
+func configureSiteIsolation(l *launcher.Launcher) *launcher.Launcher {
+	l = l.Delete("disable-site-isolation-trials")
+
+	disabled, ok := l.GetFlags("disable-features")
+	if !ok {
+		return l
+	}
+	kept := make([]string, 0, len(disabled))
+	for _, feature := range disabled {
+		if feature != "site-per-process" {
+			kept = append(kept, feature)
+		}
+	}
+	if len(kept) == 0 {
+		// A non-nil empty slice reaches Chrome as "--disable-features="
+		// (FormatArgs joins any non-nil value).
+		return l.Delete("disable-features")
+	}
+	return l.Set("disable-features", kept...)
+}
