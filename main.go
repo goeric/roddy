@@ -943,10 +943,15 @@ func normalizeOpenURL(url string) string {
 // navigationFailure formats a failed navigation, adding what to do about
 // Chrome's "net::ERR_CERT_*" / "net::ERR_SSL_*" errorText: roddy's own proxy
 // helper never terminates TLS, so those come from the server's certificate or
-// from an upstream proxy that re-signs with its own CA.
+// from an upstream proxy that re-signs with its own CA. A *rod.NavigationError
+// already reads "navigation failed: net::ERR_…", so the prefix is added only
+// to errors that lack it.
 func navigationFailure(err error) string {
-	msg := fmt.Sprintf("navigation failed: %v", err)
-	if text := err.Error(); strings.Contains(text, "ERR_CERT_") || strings.Contains(text, "ERR_SSL_") {
+	msg := err.Error()
+	if !strings.HasPrefix(msg, "navigation failed: ") {
+		msg = "navigation failed: " + msg
+	}
+	if strings.Contains(msg, "ERR_CERT_") || strings.Contains(msg, "ERR_SSL_") {
 		msg += "; for a self-signed or TLS-inspecting-proxy certificate, install its CA for Chrome or restart with `roddy start --insecure`"
 	}
 	return msg

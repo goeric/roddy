@@ -1994,6 +1994,21 @@ func TestNavigationFailure_UnrelatedErrorIsUnchanged(t *testing.T) {
 	}
 }
 
+// rod's NavigationError already carries the prefix; adding it again printed
+// "navigation failed: navigation failed: net::ERR_…".
+func TestNavigationFailure_RodErrorKeepsOnePrefix(t *testing.T) {
+	msg := navigationFailure(&rod.NavigationError{Reason: "net::ERR_CERT_AUTHORITY_INVALID"})
+	if !strings.HasPrefix(msg, "navigation failed: net::ERR_CERT_AUTHORITY_INVALID") {
+		t.Errorf("navigationFailure = %q, want it to lead with the plain message", msg)
+	}
+	if strings.Count(msg, "navigation failed: ") != 1 {
+		t.Errorf("navigationFailure = %q, want the prefix exactly once", msg)
+	}
+	if !strings.Contains(msg, "roddy start --insecure") {
+		t.Errorf("navigationFailure = %q, want the CA / --insecure hint", msg)
+	}
+}
+
 // --- normalizeOpenURL ---
 
 func TestNormalizeOpenURL(t *testing.T) {

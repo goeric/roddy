@@ -40,9 +40,6 @@ rod v0.116.2:
 - `Page.Eval` CALLS a function literal; raw `Runtime.evaluate` does not — wrap
   expressions in an IIFE `(() => { return (expr); })()` or `{a: 1}` parses as a
   labelled block.
-- A `*rod.NavigationError` already reads `navigation failed: net::ERR_…`, so
-  `navigationFailure`'s own prefix doubles it in the CLI output — pre-fork
-  behaviour, kept so callers and docs still match `navigation failed: `.
 
 Chrome (pinned Chromium 128 via rod's cache):
 - Unpacked-extension IDs are a hash of the absolute path (a-p alphabet), so IDs
