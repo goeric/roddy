@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	_ "embed"
 	"encoding/base64"
 	"encoding/json"
@@ -667,10 +668,18 @@ func cmdStart(args []string) {
 		if err != nil {
 			fatal("failed to start proxy helper: %v", err)
 		}
+		// The helper is detached, so this file is the only trace a fatal()
+		// inside it leaves. 0600 keeps it out of other users' reach.
+		logFile, err := os.OpenFile(proxyLogPath(), os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
+		if err != nil {
+			fatal("failed to open proxy helper log %s: %v", proxyLogPath(), err)
+		}
+		cmd.Stdout, cmd.Stderr = logFile, logFile
 		setSysProcAttr(cmd)
 		if err := cmd.Start(); err != nil {
 			fatal("failed to start proxy helper: %v", err)
 		}
+		_ = logFile.Close() // the child holds its own descriptor now
 		proxyPID = cmd.Process.Pid
 		if _, err := io.WriteString(stdin, authHeader+"\n"); err != nil {
 			fmt.Fprintf(os.Stderr, "stopping proxy helper (PID %d)\n", proxyPID)
@@ -678,11 +687,20 @@ func cmdStart(args []string) {
 			fatal("failed to hand credentials to the proxy helper: %v", err)
 		}
 		_ = stdin.Close() // header is already through; a close error adds nothing
-		// Detach so it survives after we exit
-		cmd.Process.Release()
 
-		// Wait for the proxy to be ready
-		time.Sleep(500 * time.Millisecond)
+		// Wait, not Release (Release is for a process nothing waits on): a
+		// helper that dies before binding has to be distinguishable from a
+		// slow one. Setsid already detached it, so abandoning this goroutine
+		// at exit changes nothing.
+		exited := make(chan error, 1)
+		go func() { exited <- cmd.Wait() }()
+
+		proxyAddr := fmt.Sprintf("127.0.0.1:%d", proxyPort)
+		if err := waitProxyReady(proxyAddr, exited, 5*time.Second); err != nil {
+			fmt.Fprintf(os.Stderr, "stopping proxy helper (PID %d)\n", proxyPID)
+			signalPID(proxyPID)
+			fatal("%s", proxyHelperFailure(err, proxyLogPath()))
+		}
 
 		// Chrome rejects the chain when the upstream proxy inspects TLS and
 		// re-signs, or when the environment lacks the root CAs
@@ -2267,25 +2285,72 @@ func readProxyAuthHeader(r io.Reader) (string, error) {
 	return "", errors.New("no auth header arrived on stdin")
 }
 
-// cmdInternalProxy is a hidden subcommand: roddy _proxy <port> <upstream>,
-// with the Proxy-Authorization header on stdin. It runs a local auth proxy
-// that forwards to the upstream proxy with credentials.
-func cmdInternalProxy(args []string) {
-	// Exactly two: a caller still passing the header as argv[2] must fail
-	// loudly instead of hanging on an inherited stdin.
-	if len(args) != 2 {
-		fatal("usage: roddy _proxy <port> <upstream> (auth header on stdin)")
-	}
-	port := args[0]
-	upstream := args[1]
-	authHeader, err := readProxyAuthHeader(os.Stdin)
-	if err != nil {
-		fatal("proxy helper: %v", err)
-	}
+// proxyLogPath is where the detached helper's stdout and stderr land. Nothing
+// else sees them: the parent exits, and the helper's own fatal() would go to a
+// closed console.
+func proxyLogPath() string {
+	return filepath.Join(stateDir(), "proxy.log")
+}
 
+// proxyHelperFailure renders a readiness failure together with whatever the
+// helper wrote before dying.
+func proxyHelperFailure(err error, logPath string) string {
+	out, readErr := os.ReadFile(logPath)
+	if readErr != nil {
+		return fmt.Sprintf("%v (helper log %s unreadable: %v)", err, logPath, readErr)
+	}
+	if trimmed := strings.TrimSpace(string(out)); trimmed != "" {
+		return fmt.Sprintf("%v; helper output: %s", err, strings.ReplaceAll(trimmed, "\n", " | "))
+	}
+	return fmt.Sprintf("%v (helper log %s is empty)", err, logPath)
+}
+
+// waitProxyReady blocks until addr accepts a connection, the helper exits, or
+// deadline passes. exited carries the helper's cmd.Wait result. An exit is
+// reported in preference to readiness: a helper that is gone leaves Chrome
+// pointed at a dead port whatever the port answered a moment ago.
+func waitProxyReady(addr string, exited <-chan error, deadline time.Duration) error {
+	gone := func(err error) error {
+		if err == nil {
+			return fmt.Errorf("proxy helper exited before listening on %s", addr)
+		}
+		return fmt.Errorf("proxy helper exited before listening on %s: %w", addr, err)
+	}
+	timeout := time.After(deadline)
+	for {
+		select {
+		case err := <-exited:
+			return gone(err)
+		default:
+		}
+		if conn, err := net.DialTimeout("tcp", addr, 100*time.Millisecond); err == nil {
+			conn.Close()
+			return nil
+		}
+		select {
+		case err := <-exited:
+			return gone(err)
+		case <-timeout:
+			return fmt.Errorf("proxy helper did not listen on %s within %s", addr, deadline)
+		case <-time.After(25 * time.Millisecond):
+		}
+	}
+}
+
+// runProxyHelper binds the port BEFORE reading the auth header: the parent
+// probed that port for freeness and released it, so every step taken before
+// the bind widens the window for another process to take it. Returns when ctx
+// is cancelled or the server stops.
+func runProxyHelper(ctx context.Context, port, upstream string, stdin io.Reader) error {
 	listener, err := net.Listen("tcp", "127.0.0.1:"+port)
 	if err != nil {
-		fatal("proxy listen failed: %v", err)
+		return fmt.Errorf("proxy listen failed: %w", err)
+	}
+	defer listener.Close()
+
+	authHeader, err := readProxyAuthHeader(stdin)
+	if err != nil {
+		return fmt.Errorf("proxy helper: %w", err)
 	}
 
 	server := &http.Server{
@@ -2297,7 +2362,33 @@ func cmdInternalProxy(args []string) {
 			}
 		}),
 	}
-	server.Serve(listener) // blocks forever
+	stopped := make(chan struct{})
+	defer close(stopped)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = server.Close()
+		case <-stopped:
+		}
+	}()
+	if err := server.Serve(listener); !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	return nil
+}
+
+// cmdInternalProxy is a hidden subcommand: roddy _proxy <port> <upstream>,
+// with the Proxy-Authorization header on stdin. It runs a local auth proxy
+// that forwards to the upstream proxy with credentials.
+func cmdInternalProxy(args []string) {
+	// Exactly two: a caller still passing the header as argv[2] must fail
+	// loudly instead of hanging on an inherited stdin.
+	if len(args) != 2 {
+		fatal("usage: roddy _proxy <port> <upstream> (auth header on stdin)")
+	}
+	if err := runProxyHelper(context.Background(), args[0], args[1], os.Stdin); err != nil {
+		fatal("%v", err)
+	}
 }
 
 func proxyConnect(w http.ResponseWriter, r *http.Request, upstream, authHeader string) {

@@ -2,12 +2,14 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1582,6 +1584,145 @@ func TestReadProxyAuthHeader(t *testing.T) {
 	got, err = readProxyAuthHeader(&errAfterPartialRead{data: "Basic abc", err: broken})
 	if !errors.Is(err, broken) || got != "" {
 		t.Errorf("readProxyAuthHeader (partial + error) = %q, %v; want \"\", %v", got, err, broken)
+	}
+}
+
+// waitProxyReady is what stands between a helper that never bound and Chrome
+// launching at a dead port.
+func TestWaitProxyReady_ReturnsOnceThePortAccepts(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	if err := waitProxyReady(ln.Addr().String(), make(chan error), 5*time.Second); err != nil {
+		t.Errorf("waitProxyReady = %v, want nil", err)
+	}
+}
+
+func TestWaitProxyReady_DeadlineWhenNothingBinds(t *testing.T) {
+	addr := closedLoopbackAddr(t)
+	err := waitProxyReady(addr, make(chan error), 150*time.Millisecond)
+	if err == nil {
+		t.Fatal("waitProxyReady = nil, want a deadline error")
+	}
+	if !strings.Contains(err.Error(), addr) || !strings.Contains(err.Error(), "150ms") {
+		t.Errorf("deadline error = %q, want it to name %q and the deadline", err, addr)
+	}
+}
+
+// A dead helper has to be reported as dead, not as a timeout: its log is the
+// only place its fatal() text survives.
+func TestWaitProxyReady_ReportsHelperExit(t *testing.T) {
+	exited := make(chan error, 1)
+	exited <- errors.New("exit status 2")
+	start := time.Now()
+	err := waitProxyReady(closedLoopbackAddr(t), exited, 30*time.Second)
+	if err == nil {
+		t.Fatal("waitProxyReady = nil, want an exit error")
+	}
+	if !strings.Contains(err.Error(), "exited") || !strings.Contains(err.Error(), "exit status 2") {
+		t.Errorf("exit error = %q, want it to report the exit and the wait error", err)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("waited %s for an already-exited helper", elapsed)
+	}
+}
+
+// closedLoopbackAddr returns a loopback address nothing is listening on.
+func closedLoopbackAddr(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := ln.Addr().String()
+	if err := ln.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	return addr
+}
+
+// The parent probes a free port and releases it before the helper binds it;
+// reading stdin first would widen that window by a whole credential handoff.
+func TestRunProxyHelper_BindsBeforeReadingStdin(t *testing.T) {
+	addr := closedLoopbackAddr(t)
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("split %q: %v", addr, err)
+	}
+
+	stdinR, stdinW := io.Pipe()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- runProxyHelper(ctx, port, "proxy.example:8080", stdinR) }()
+	defer func() {
+		cancel()
+		stdinW.Close()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Errorf("runProxyHelper = %v, want nil", err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Error("runProxyHelper did not return after the context was cancelled")
+		}
+	}()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		conn, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)
+		if err == nil {
+			conn.Close()
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("nothing listening on %s with stdin unwritten: the helper reads the auth header before binding", addr)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// The pipe write returns only once the helper reads it, so getting here
+	// proves the bind came first.
+	if _, err := io.WriteString(stdinW, "Basic abc123\n"); err != nil {
+		t.Fatalf("write auth header: %v", err)
+	}
+}
+
+func TestProxyLogPath_LivesInStateDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("RODDY_HOME", home)
+	if got, want := proxyLogPath(), filepath.Join(home, "proxy.log"); got != want {
+		t.Errorf("proxyLogPath() = %q, want %q", got, want)
+	}
+}
+
+func TestProxyHelperFailure(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "proxy.log")
+	if err := os.WriteFile(logPath, []byte("error: proxy listen failed: address already in use\n"), 0600); err != nil {
+		t.Fatalf("write log: %v", err)
+	}
+	msg := proxyHelperFailure(errors.New("proxy helper exited before listening on 127.0.0.1:4242"), logPath)
+	if !strings.Contains(msg, "exited before listening") ||
+		!strings.Contains(msg, "proxy listen failed: address already in use") {
+		t.Errorf("proxyHelperFailure = %q, want the readiness error and the helper's log", msg)
+	}
+	if strings.Contains(msg, "\n") {
+		t.Errorf("proxyHelperFailure = %q, want one line (fatal appends its own)", msg)
+	}
+
+	empty := filepath.Join(dir, "empty.log")
+	if err := os.WriteFile(empty, []byte("\n"), 0600); err != nil {
+		t.Fatalf("write log: %v", err)
+	}
+	msg = proxyHelperFailure(errors.New("boom"), empty)
+	if !strings.Contains(msg, "boom") || !strings.Contains(msg, "empty") {
+		t.Errorf("proxyHelperFailure (empty log) = %q, want the error and that the log is empty", msg)
+	}
+
+	msg = proxyHelperFailure(errors.New("boom"), filepath.Join(dir, "missing.log"))
+	if !strings.Contains(msg, "boom") {
+		t.Errorf("proxyHelperFailure (no log) = %q, want the error", msg)
 	}
 }
 

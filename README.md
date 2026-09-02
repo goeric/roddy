@@ -745,6 +745,8 @@ In environments with authenticated HTTP proxies (e.g., `HTTPS_PROXY=http://user:
 
 This is necessary because Chrome cannot natively authenticate to proxies during HTTPS tunnel (CONNECT) establishment. The local proxy runs as a background process and is automatically cleaned up by `roddy stop`.
 
+`start` waits for that local proxy to accept connections and fails with an `error:` (rather than launching Chrome at a dead port) if it does not come up; the helper's own output goes to `proxy.log` in the state directory, where its failure message can be read back.
+
 See [claude-code-chrome-proxy.md](claude-code-chrome-proxy.md) for detailed technical notes.
 
 ## How it works
