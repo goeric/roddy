@@ -109,13 +109,13 @@ Since the sandbox-by-default change, `--single-process` (and `--no-sandbox`)
 only go on an unsandboxed launch — a container, root, or `--no-sandbox`. A
 plain sandboxed start gets neither.
 
-That derivation is now overridable (roddy #14). A gVisor environment that none
-of the container markers identify launches Chrome sandboxed just fine and still
-hangs screenshots for ~27s; `roddy start --no-sandbox --single-process` is the
-explicit way in. `--single-process` alone is refused — the flag only ever goes
-on an unsandboxed launch (`--single-process requires --no-sandbox`) — and
-`--no-single-process` is the opposite override, for keeping crash isolation or
-debugging an MV3 service worker on a launch that would otherwise collapse.
+Overridable since roddy #14. A gVisor environment that none of the container
+markers identify launches Chrome sandboxed just fine and still hangs
+screenshots for ~27s; `roddy start --no-sandbox --single-process` is the
+explicit way in. `--single-process` on a sandboxed launch is refused — the flag
+only ever goes on an unsandboxed launch (`--single-process requires
+--no-sandbox`) — and `--no-single-process` is the opposite override, keeping
+crash isolation on a launch that would otherwise collapse into one process.
 
 ## Trade-offs of `--single-process`
 

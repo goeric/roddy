@@ -13,13 +13,13 @@ Browser lifecycle:
                                   --no-sandbox turns that off. As root and in
                                   containers it is implied up front, no failed
                                   attempt. A sandboxed launch that fails for a
-                                  sandbox reason retries unsandboxed and says so.
-                                  An unsandboxed launch also gets
+                                  sandbox reason retries unsandboxed and says
+                                  so. An unsandboxed launch also gets
                                   --single-process, which screenshots need
                                   under gVisor, except on macOS or with
                                   extensions. --no-single-process opts out;
-                                  --single-process asks for it and needs
-                                  --no-sandbox, no extensions, and not macOS
+                                  --single-process asks for it (unsandboxed,
+                                  no extensions, not macOS)
   roddy connect <host:port>      Connect to existing Chrome on remote debug port
   roddy stop                     Shut down Chrome
   roddy status                   Show browser status
