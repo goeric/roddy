@@ -1189,6 +1189,36 @@ func TestParseStartArgs_NoSandboxFlag(t *testing.T) {
 	}
 }
 
+func TestParseStartArgs_SingleProcessFlags(t *testing.T) {
+	cases := []struct {
+		args []string
+		want singleProcessMode
+	}{
+		{nil, singleProcessAuto},
+		{[]string{"--single-process"}, singleProcessOn},
+		{[]string{"--no-single-process"}, singleProcessOff},
+	}
+	for _, c := range cases {
+		opts, err := parseStartArgs(c.args)
+		if err != nil {
+			t.Fatalf("parseStartArgs(%q): unexpected error: %v", c.args, err)
+		}
+		if opts.singleProcess != c.want {
+			t.Errorf("parseStartArgs(%q).singleProcess = %v, want %v", c.args, opts.singleProcess, c.want)
+		}
+	}
+}
+
+func TestParseStartArgs_SingleProcessConflict(t *testing.T) {
+	_, err := parseStartArgs([]string{"--single-process", "--no-single-process"})
+	if err == nil {
+		t.Fatal("expected an error for --single-process with --no-single-process")
+	}
+	if !strings.Contains(err.Error(), "--single-process conflicts with --no-single-process") {
+		t.Errorf("error = %v, want it to name the conflict", err)
+	}
+}
+
 // sandbox defaults
 // ================
 
@@ -1383,31 +1413,139 @@ func TestLaunchWithFallback(t *testing.T) {
 	}
 }
 
-// A sandboxed launch must DELETE --no-sandbox, not merely skip setting it:
-// rod's launcher.New() seeds it inside containers, where a test that only
-// checks a fresh launcher would pass without exercising anything.
-func TestApplySandboxFlags_DeletesContainerSeededNoSandbox(t *testing.T) {
-	l := applySandboxFlags(launcher.New().Set("no-sandbox"), false)
-	if l.Has("no-sandbox") {
-		t.Error("--no-sandbox survived a sandboxed launch")
+// useSingleProcess is the whole --single-process policy: the auto rows are the
+// derived default the flag pair overrides, and every rejection names its
+// reason. Order matters where two apply — the first check wins.
+func TestUseSingleProcess(t *testing.T) {
+	cases := []struct {
+		name              string
+		mode              singleProcessMode
+		unsandboxed       bool
+		hasExtensions     bool
+		extensionsFromWXT bool
+		goos              string
+		want              bool
+		wantErr           []string // substrings the error must carry; nil means no error
+		wantNotErr        []string
+	}{
+		{name: "auto/linux/unsandboxed", mode: singleProcessAuto, unsandboxed: true, goos: "linux", want: true},
+		{name: "auto/linux/sandboxed", mode: singleProcessAuto, goos: "linux"},
+		{name: "auto/darwin/unsandboxed", mode: singleProcessAuto, unsandboxed: true, goos: "darwin"},
+		{name: "auto/linux/extensions", mode: singleProcessAuto, unsandboxed: true, hasExtensions: true, goos: "linux"},
+
+		{name: "off/linux/unsandboxed", mode: singleProcessOff, unsandboxed: true, goos: "linux"},
+		{name: "off/linux/sandboxed", mode: singleProcessOff, goos: "linux"},
+		{name: "off/darwin/unsandboxed", mode: singleProcessOff, unsandboxed: true, goos: "darwin"},
+		{name: "off/linux/extensions", mode: singleProcessOff, unsandboxed: true, hasExtensions: true, goos: "linux"},
+
+		{name: "on/linux/unsandboxed", mode: singleProcessOn, unsandboxed: true, goos: "linux", want: true},
+		{
+			name: "on/darwin", mode: singleProcessOn, unsandboxed: true, goos: "darwin",
+			wantErr: []string{"--single-process", "macOS", "navigator.mediaDevices"},
+		},
+		{
+			name: "on/linux/extensions", mode: singleProcessOn, unsandboxed: true, hasExtensions: true, goos: "linux",
+			wantErr:    []string{"--single-process", "extensions"},
+			wantNotErr: []string{"--no-extension"}, // --extension was explicit: nothing to opt out of
+		},
+		{
+			name: "on/linux/wxt", mode: singleProcessOn, unsandboxed: true, hasExtensions: true,
+			extensionsFromWXT: true, goos: "linux",
+			wantErr: []string{"--single-process", "extensions", "--no-extension"},
+		},
+		{
+			name: "on/linux/sandboxed", mode: singleProcessOn, goos: "linux",
+			wantErr: []string{"--single-process requires --no-sandbox"},
+		},
+
+		// Rejection order: macOS outranks both, extensions outrank the sandbox.
+		{
+			name: "on/darwin/extensions", mode: singleProcessOn, unsandboxed: true, hasExtensions: true, goos: "darwin",
+			wantErr: []string{"macOS"}, wantNotErr: []string{"extensions"},
+		},
+		{
+			name: "on/darwin/sandboxed", mode: singleProcessOn, goos: "darwin",
+			wantErr: []string{"macOS"}, wantNotErr: []string{"--no-sandbox"},
+		},
+		{
+			name: "on/linux/sandboxed/extensions", mode: singleProcessOn, hasExtensions: true, goos: "linux",
+			wantErr: []string{"extensions"}, wantNotErr: []string{"--no-sandbox"},
+		},
 	}
-	if l.Has("single-process") {
-		t.Error("--single-process set on a sandboxed launch")
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := useSingleProcess(c.mode, c.unsandboxed, c.hasExtensions, c.extensionsFromWXT, c.goos)
+			if len(c.wantErr) == 0 {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if got != c.want {
+					t.Errorf("singleProcess = %v, want %v", got, c.want)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("singleProcess = %v, want an error", got)
+			}
+			if got {
+				t.Error("singleProcess = true alongside an error")
+			}
+			for _, want := range c.wantErr {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error = %q, want it to mention %q", err, want)
+				}
+			}
+			for _, unwanted := range c.wantNotErr {
+				if strings.Contains(err.Error(), unwanted) {
+					t.Errorf("error = %q, want it NOT to mention %q", err, unwanted)
+				}
+			}
+		})
 	}
 }
 
-func TestApplySandboxFlags_Unsandboxed(t *testing.T) {
-	l := applySandboxFlags(launcher.New(), true)
-	if !l.Has("no-sandbox") {
-		t.Error("--no-sandbox missing from an unsandboxed launch")
+// applySandboxFlags decides both flags outright: an off decision DELETES its
+// flag rather than merely skipping it, so the result is the same whatever the
+// launcher handed in already carries — which is what the preseeded pass
+// exercises. rod's launcher.New() seeds --no-sandbox inside containers, where
+// a test that only checks a fresh launcher would pass without exercising
+// anything.
+func TestApplySandboxFlags(t *testing.T) {
+	cases := []struct {
+		name              string
+		unsandboxed       bool
+		singleProcess     bool
+		wantNoSandbox     bool
+		wantSingleProcess bool
+	}{
+		{"sandboxed", false, false, false, false},
+		// A sandboxed launch drops --single-process whatever the caller
+		// decided: the flag only ever rides on an unsandboxed launch.
+		{"sandboxed, single process asked for", false, true, false, false},
+		{"unsandboxed, multi-process", true, false, true, false},
+		{"unsandboxed, single process", true, true, true, true},
 	}
-	if got, want := l.Has("single-process"), singleProcessSupported(); got != want {
-		t.Errorf("single-process = %v, want %v (platform: %v)", got, want, runtime.GOOS)
+	for _, c := range cases {
+		for _, preseeded := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/preseeded=%v", c.name, preseeded), func(t *testing.T) {
+				l := launcher.New()
+				if preseeded {
+					l = l.Set("no-sandbox").Set("single-process")
+				}
+				l = applySandboxFlags(l, c.unsandboxed, c.singleProcess)
+				if got := l.Has("no-sandbox"); got != c.wantNoSandbox {
+					t.Errorf("--no-sandbox = %v, want %v", got, c.wantNoSandbox)
+				}
+				if got := l.Has("single-process"); got != c.wantSingleProcess {
+					t.Errorf("--single-process = %v, want %v", got, c.wantSingleProcess)
+				}
+			})
+		}
 	}
 }
 
 func TestNewStartLauncher_SandboxedByDefault(t *testing.T) {
-	l := newStartLauncher(t.TempDir(), true, false, nil, 0, false)
+	l := newStartLauncher(startLaunch{dataDir: t.TempDir(), headless: true})
 	if l.Has("no-sandbox") {
 		t.Error("--no-sandbox set on a default launch")
 	}
@@ -1417,19 +1555,38 @@ func TestNewStartLauncher_SandboxedByDefault(t *testing.T) {
 }
 
 func TestNewStartLauncher_Unsandboxed(t *testing.T) {
-	l := newStartLauncher(t.TempDir(), true, true, nil, 0, false)
+	l := newStartLauncher(startLaunch{dataDir: t.TempDir(), headless: true, unsandboxed: true, singleProcess: true})
 	if !l.Has("no-sandbox") {
 		t.Error("--no-sandbox missing from an unsandboxed launch")
 	}
-	if got, want := l.Has("single-process"), singleProcessSupported(); got != want {
-		t.Errorf("single-process = %v, want %v (platform: %v)", got, want, runtime.GOOS)
+	if !l.Has("single-process") {
+		t.Error("--single-process missing from a launch that asked for it")
+	}
+}
+
+// The two decisions are separate fields: an unsandboxed launch that did not ask
+// for --single-process must not get it.
+func TestNewStartLauncher_UnsandboxedMultiProcess(t *testing.T) {
+	l := newStartLauncher(startLaunch{dataDir: t.TempDir(), headless: true, unsandboxed: true, singleProcess: false})
+	if !l.Has("no-sandbox") {
+		t.Error("--no-sandbox missing from an unsandboxed launch")
+	}
+	if l.Has("single-process") {
+		t.Error("--single-process set on a launch that did not ask for it")
 	}
 }
 
 // Extensions break under --single-process, so configureExtensions deletes it —
 // which only works while it runs AFTER applySandboxFlags in newStartLauncher.
+// useSingleProcess refuses the combination already; this is the second belt.
 func TestNewStartLauncher_ExtensionsOutrankSingleProcess(t *testing.T) {
-	l := newStartLauncher(t.TempDir(), true, true, []extensionInfo{{Dir: "/tmp/ext"}}, 0, false)
+	l := newStartLauncher(startLaunch{
+		dataDir:       t.TempDir(),
+		headless:      true,
+		unsandboxed:   true,
+		singleProcess: true,
+		extensions:    []extensionInfo{{Dir: "/tmp/ext"}},
+	})
 	if l.Has("single-process") {
 		t.Error("--single-process survived loading an extension")
 	}
@@ -1441,7 +1598,7 @@ func TestNewStartLauncher_ExtensionsOutrankSingleProcess(t *testing.T) {
 // The proxy helper is a transparent CONNECT tunnel that never terminates TLS,
 // so a proxied launch must keep Chrome's certificate validation.
 func TestNewStartLauncher_ProxyKeepsCertValidation(t *testing.T) {
-	l := newStartLauncher(t.TempDir(), true, false, nil, 9222, false)
+	l := newStartLauncher(startLaunch{dataDir: t.TempDir(), headless: true, proxyPort: 9222})
 	if l.Has("ignore-certificate-errors") {
 		t.Error("--ignore-certificate-errors set on a proxied launch")
 	}
@@ -1451,7 +1608,7 @@ func TestNewStartLauncher_ProxyKeepsCertValidation(t *testing.T) {
 }
 
 func TestNewStartLauncher_InsecureIgnoresCertErrors(t *testing.T) {
-	l := newStartLauncher(t.TempDir(), true, false, nil, 0, true)
+	l := newStartLauncher(startLaunch{dataDir: t.TempDir(), headless: true, ignoreCertErrors: true})
 	if !l.Has("ignore-certificate-errors") {
 		t.Error("--ignore-certificate-errors missing from an --insecure launch")
 	}
@@ -1462,12 +1619,77 @@ func TestNewStartLauncher_InsecureIgnoresCertErrors(t *testing.T) {
 
 // The two flags are independent: --insecure behind a proxy sets both.
 func TestNewStartLauncher_InsecureWithProxy(t *testing.T) {
-	l := newStartLauncher(t.TempDir(), true, false, nil, 9222, true)
+	l := newStartLauncher(startLaunch{dataDir: t.TempDir(), headless: true, proxyPort: 9222, ignoreCertErrors: true})
 	if !l.Has("ignore-certificate-errors") {
 		t.Error("--ignore-certificate-errors missing from a proxied --insecure launch")
 	}
 	if got, want := l.Get("proxy-server"), "http://127.0.0.1:9222"; got != want {
 		t.Errorf("proxy-server = %q, want %q", got, want)
+	}
+}
+
+// Every attempt gets its own --single-process decision, so a sandbox mode and
+// the flag set it produces cannot come apart. goos is pinned to "linux": on
+// macOS the auto rows would all be false and the "on" row an error.
+func TestStartAttemptLauncher(t *testing.T) {
+	cases := []struct {
+		name              string
+		mode              singleProcessMode
+		unsandboxed       bool
+		wantSingleProcess bool
+	}{
+		{"auto, sandboxed", singleProcessAuto, false, false},
+		{"auto, unsandboxed", singleProcessAuto, true, true},
+		{"off, unsandboxed", singleProcessOff, true, false},
+		{"on, unsandboxed", singleProcessOn, true, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			build := startAttemptLauncher(startLaunch{dataDir: t.TempDir(), headless: true}, c.mode, false, "linux")
+			l, err := build(c.unsandboxed)
+			if err != nil {
+				t.Fatalf("build: %v", err)
+			}
+			if got := l.Has("no-sandbox"); got != c.unsandboxed {
+				t.Errorf("--no-sandbox = %v, want %v", got, c.unsandboxed)
+			}
+			if got := l.Has("single-process"); got != c.wantSingleProcess {
+				t.Errorf("--single-process = %v, want %v", got, c.wantSingleProcess)
+			}
+		})
+	}
+}
+
+// The composition the retry depends on: the sandboxed attempt is
+// multi-process, and the unsandboxed retry launchWithFallback drives picks up
+// the auto default that comes with it.
+func TestStartAttemptLauncher_RetryFlipsSingleProcess(t *testing.T) {
+	build := startAttemptLauncher(startLaunch{dataDir: t.TempDir(), headless: true}, singleProcessAuto, false, "linux")
+	var attempts []*launcher.Launcher
+	launch := func(unsandboxed bool) (*launcher.Launcher, string, error) {
+		l, err := build(unsandboxed)
+		if err != nil {
+			return nil, "", err
+		}
+		attempts = append(attempts, l)
+		if len(attempts) == 1 {
+			return l, "", errors.New("Failed to move to new namespace")
+		}
+		return l, "ws://ok", nil
+	}
+
+	var warn bytes.Buffer
+	if _, _, unsandboxed, err := launchWithFallback(launch, false, &warn); err != nil || !unsandboxed {
+		t.Fatalf("launchWithFallback = %v, %v; want an unsandboxed retry", unsandboxed, err)
+	}
+	if len(attempts) != 2 {
+		t.Fatalf("built %d launchers, want 2", len(attempts))
+	}
+	if attempts[0].Has("single-process") {
+		t.Error("--single-process set on the sandboxed attempt")
+	}
+	if !attempts[1].Has("no-sandbox") || !attempts[1].Has("single-process") {
+		t.Error("the retry did not pick up the unsandboxed auto default")
 	}
 }
 
@@ -1479,7 +1701,7 @@ func TestSandboxedLaunch(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("running as root: Chrome cannot sandbox itself")
 	}
-	l := newStartLauncher(t.TempDir(), true, false, nil, 0, false)
+	l := newStartLauncher(startLaunch{dataDir: t.TempDir(), headless: true})
 	u, err := l.Launch()
 	if err != nil {
 		// Probe rather than read the message: an unsandboxed launch that comes
@@ -1517,6 +1739,33 @@ func TestSandboxedLaunch(t *testing.T) {
 	}
 }
 
+// --no-single-process makes an unsandboxed multi-process launch reachable,
+// which crash isolation needs. On macOS an unsandboxed launch is multi-process
+// regardless; the case this pins is Linux, where the auto default would set
+// --single-process.
+func TestUnsandboxedMultiProcessLaunch(t *testing.T) {
+	l := newStartLauncher(startLaunch{dataDir: t.TempDir(), headless: true, unsandboxed: true})
+	if l.Has("single-process") {
+		t.Fatal("--single-process set on a launch that opted out")
+	}
+	page, cleanup := launcherPage(t, l)
+	defer cleanup()
+
+	if err := page.Navigate(env.server.URL + "/"); err != nil {
+		t.Fatalf("navigate: %v", err)
+	}
+	if err := page.WaitLoad(); err != nil {
+		t.Fatalf("wait for load: %v", err)
+	}
+	info, err := page.Info()
+	if err != nil {
+		t.Fatalf("page info: %v", err)
+	}
+	if info.Title != "Test Page" {
+		t.Errorf("title = %q, want %q", info.Title, "Test Page")
+	}
+}
+
 // waitProcessGone blocks until pid is gone, up to ~3s. rod's launcher runs its
 // own cmd.Wait, so a second Wait here would lose the race and return
 // immediately; signal 0 asks instead of reaping. On Windows Signal fails on
@@ -1538,12 +1787,24 @@ func waitProcessGone(t testing.TB, pid int) {
 	t.Logf("Chrome (PID %d) still alive after 3s", pid)
 }
 
+// autoStartLauncher builds the unsandboxed launcher start itself would build
+// on this platform, --single-process decision included, so the fixtures cannot
+// drift from the policy. Auto never errors.
+func autoStartLauncher(t testing.TB, c startLaunch) *launcher.Launcher {
+	t.Helper()
+	l, err := startAttemptLauncher(c, singleProcessAuto, false, runtime.GOOS)(true)
+	if err != nil {
+		t.Fatalf("build an unsandboxed launcher: %v", err)
+	}
+	return l
+}
+
 // probeUnsandboxedLaunch launches and immediately closes an unsandboxed
 // browser, reporting whether Chrome runs here at all. Chrome is launched
 // Leakless(false), so every failure path after Launch must kill it.
 func probeUnsandboxedLaunch(t testing.TB, dataDir string) error {
 	t.Helper()
-	l := newStartLauncher(dataDir, true, true, nil, 0, false)
+	l := autoStartLauncher(t, startLaunch{dataDir: dataDir, headless: true})
 	u, err := l.Launch()
 	if err != nil {
 		return err
@@ -2078,11 +2339,20 @@ func TestInsecureFlag_WithSelfSignedCert(t *testing.T) {
 }
 
 // startLauncherPage launches Chrome the way start does — unsandboxed, so it
-// runs wherever the suite does — and returns a blank page plus the teardown
-// Leakless(false) makes mandatory: an unwaited Chrome races t.TempDir cleanup.
+// runs wherever the suite does.
 func startLauncherPage(t *testing.T, ignoreCertErrors bool) (*rod.Page, func()) {
 	t.Helper()
-	l := newStartLauncher(t.TempDir(), true, true, nil, 0, ignoreCertErrors)
+	return launcherPage(t, autoStartLauncher(t, startLaunch{
+		dataDir:          t.TempDir(),
+		headless:         true,
+		ignoreCertErrors: ignoreCertErrors,
+	}))
+}
+
+// launcherPage launches l and returns a blank page plus the teardown
+// Leakless(false) makes mandatory: an unwaited Chrome races t.TempDir cleanup.
+func launcherPage(t *testing.T, l *launcher.Launcher) (*rod.Page, func()) {
+	t.Helper()
 	u, err := l.Launch()
 	if err != nil {
 		t.Fatalf("launch: %v", err)
@@ -2215,8 +2485,19 @@ func TestSessionFlagNotes(t *testing.T) {
 	}{
 		{"default", State{}, ""},
 		{"unsandboxed", State{Unsandboxed: true}, "sandbox off"},
+		{"single process", State{SingleProcess: true}, "single process"},
 		{"insecure", State{Insecure: true}, "certificate errors ignored"},
-		{"both", State{Unsandboxed: true, Insecure: true}, "sandbox off, certificate errors ignored"},
+		{
+			"unsandboxed and single process",
+			State{Unsandboxed: true, SingleProcess: true},
+			"sandbox off, single process",
+		},
+		{"unsandboxed and insecure", State{Unsandboxed: true, Insecure: true}, "sandbox off, certificate errors ignored"},
+		{
+			"all three",
+			State{Unsandboxed: true, SingleProcess: true, Insecure: true},
+			"sandbox off, single process, certificate errors ignored",
+		},
 	}
 	for _, c := range cases {
 		if got := sessionFlagNotes(&c.state); got != c.want {

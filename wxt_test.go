@@ -85,9 +85,12 @@ func TestWXTStart_UserAlreadyDecided(t *testing.T) {
 		{"--no-extension, unbuilt", optedOut, unbuilt},
 	}
 	for _, c := range cases {
-		out, notice, hint := wxtStart(c.opts, c.dir, t.TempDir())
+		out, loaded, notice, hint := wxtStart(c.opts, c.dir, t.TempDir())
 		if notice != "" || hint != "" {
 			t.Errorf("%s: got notice %q hint %q, want silence", c.name, notice, hint)
+		}
+		if loaded {
+			t.Errorf("%s: loaded = true where the user already decided", c.name)
 		}
 		if len(out.extensions) != len(c.opts.extensions) {
 			t.Errorf("%s: extensions changed: %v", c.name, out.extensions)
@@ -97,17 +100,23 @@ func TestWXTStart_UserAlreadyDecided(t *testing.T) {
 
 func TestWXTStart_NoProject(t *testing.T) {
 	base := startOptions{headless: true}
-	out, notice, hint := wxtStart(base, writeWXTProject(t, "", false), t.TempDir())
+	out, loaded, notice, hint := wxtStart(base, writeWXTProject(t, "", false), t.TempDir())
 	if notice != "" || hint != "" || len(out.extensions) != 0 {
 		t.Errorf("no project: got %v %q %q, want silence", out.extensions, notice, hint)
+	}
+	if loaded {
+		t.Error("no project: loaded = true")
 	}
 }
 
 func TestWXTStart_Unbuilt(t *testing.T) {
 	base := startOptions{headless: true}
-	out, notice, hint := wxtStart(base, writeWXTProject(t, "wxt.config.ts", false), t.TempDir())
+	out, loaded, notice, hint := wxtStart(base, writeWXTProject(t, "wxt.config.ts", false), t.TempDir())
 	if notice != "" || len(out.extensions) != 0 {
 		t.Errorf("unbuilt: got extensions %v notice %q, want neither", out.extensions, notice)
+	}
+	if loaded {
+		t.Error("unbuilt: loaded = true")
 	}
 	for _, want := range []string{"WXT project detected", wxtChromeOutput, "wxt build"} {
 		if !strings.Contains(hint, want) {
@@ -119,9 +128,13 @@ func TestWXTStart_Unbuilt(t *testing.T) {
 func TestWXTStart_Built(t *testing.T) {
 	base := startOptions{headless: true}
 	dir := writeWXTProject(t, "wxt.config.ts", true)
-	out, notice, hint := wxtStart(base, dir, t.TempDir())
+	out, loaded, notice, hint := wxtStart(base, dir, t.TempDir())
 	if hint != "" {
 		t.Errorf("built: unexpected hint %q", hint)
+	}
+	// What start's --single-process rejection tells --no-extension about.
+	if !loaded {
+		t.Error("built: loaded = false where the build was appended")
 	}
 	for _, want := range []string{"WXT project detected", wxtChromeOutput, "--no-extension"} {
 		if !strings.Contains(notice, want) {
@@ -161,9 +174,12 @@ func TestWXTStart_BrokenBuildDegrades(t *testing.T) {
 		{"missing manifest", noManifest, "no manifest.json"},
 	}
 	for _, c := range cases {
-		out, notice, hint := wxtStart(base, c.dir, t.TempDir())
+		out, loaded, notice, hint := wxtStart(base, c.dir, t.TempDir())
 		if notice != "" || len(out.extensions) != 0 {
 			t.Errorf("%s: got extensions %v notice %q, want neither", c.name, out.extensions, notice)
+		}
+		if loaded {
+			t.Errorf("%s: loaded = true for a build that did not load", c.name)
 		}
 		for _, want := range []string{"WXT project detected", wxtChromeOutput, "--no-extension", c.want} {
 			if !strings.Contains(hint, want) {

@@ -108,13 +108,15 @@ Each CLI invocation is a short-lived process. Chrome runs independently and tabs
 ### Start/stop the browser
 
 ```bash
-roddy start              # Launch headless Chrome
-roddy start --show       # Launch with visible browser window
-roddy start --insecure   # Launch with certificate errors ignored (-k shorthand)
-roddy start --no-sandbox # Launch without Chrome's sandbox (containers, gVisor)
-roddy connect host:9222  # Connect to existing Chrome on remote debug port
-roddy status             # Show browser info and active page
-roddy stop               # Shut down Chrome
+roddy start                                # Launch headless Chrome
+roddy start --show                         # Launch with visible browser window
+roddy start --insecure                     # Launch with certificate errors ignored (-k shorthand)
+roddy start --no-sandbox                   # Launch without Chrome's sandbox (containers, gVisor)
+roddy start --no-single-process            # Keep Chrome multi-process (crash isolation)
+roddy start --no-sandbox --single-process  # Force single-process (gVisor with no marker files)
+roddy connect host:9222                    # Connect to existing Chrome on remote debug port
+roddy status                               # Show browser info and active page
+roddy stop                                 # Shut down Chrome
 ```
 
 Chrome runs with its sandbox on by default. Running as root implies
@@ -125,6 +127,17 @@ usually absent. Both are decided up front, with a note on stderr and no failed
 first attempt; an unsandboxed launch also gets `--single-process` where the
 platform takes it, which those environments need for screenshots — unless
 extensions are loaded, which drops it again (it breaks them).
+
+`--single-process` and `--no-single-process` override that derived default.
+`--no-single-process` is always accepted, and is simply a no-op where the flag
+was not going on anyway; it is how you get an unsandboxed *multi-process*
+browser, for crash isolation. `--single-process` is refused rather than quietly
+dropped when it cannot be honoured: on macOS (any page touching
+`navigator.mediaDevices` aborts the browser), with extensions loaded (they break
+under it — if the extension came from a WXT build `start` auto-loaded,
+`--no-extension` opts out), and on a sandboxed launch (`--single-process
+requires --no-sandbox`). A session that ends up single-process says "single
+process" in `start` output and `status`.
 
 The detection is a marker check, not a kernel probe, so containers it does not
 recognise (LXC, systemd-nspawn, containerd outside Kubernetes) get the ordinary
@@ -789,7 +802,7 @@ The tool uses the [rod](https://github.com/go-rod/rod) Go library which communic
 
 | Command | Arguments | Description |
 |---|---|---|
-| `start` | `[--show] [--insecure\|-k] [--no-sandbox]` | Launch Chrome (headless by default, `--show` for visible) |
+| `start` | `[--show] [--insecure\|-k] [--no-sandbox] [--extension PATH] [--no-extension] [--single-process\|--no-single-process]` | Launch Chrome (headless by default, `--show` for visible) |
 | `connect` | `<host:port>` | Connect to existing Chrome on remote debug port |
 | `stop` | | Shut down Chrome |
 | `status` | | Show browser status |

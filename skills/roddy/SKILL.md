@@ -58,6 +58,11 @@ roddy start --insecure   # or -k: ignore certificate errors (self-signed dev ser
                          # such sessions say "certificate errors ignored" in start output and status)
 roddy start --no-sandbox # skip Chrome's sandbox (implied as root and in containers;
                          # unsandboxed sessions say "sandbox off" in start output and status)
+roddy start --no-single-process  # keep Chrome multi-process for crash isolation (unsandboxed non-macOS
+                                 # launches take --single-process by default unless an extension is loaded;
+                                 # gVisor screenshots need it); --single-process asks for it (unsandboxed
+                                 # only, no extensions, not macOS); such sessions say "single process" in
+                                 # start output and status
 roddy connect <host:port>        # attach to a Chrome already listening on a debug port
 roddy status             # which pages? (but see the exit-code trap under Checks)
 roddy stop               # shut it down

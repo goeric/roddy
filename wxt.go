@@ -49,35 +49,38 @@ func detectWXT(dir string) wxtDetection {
 }
 
 // wxtStart decides what start does about a WXT project in dir: the options to
-// launch with, a notice for stdout, or a hint for stderr — the options
-// unchanged and no output when the user already decided with --extension or
-// --no-extension.
+// launch with, whether a build was appended to them, a notice for stdout, or a
+// hint for stderr — the options unchanged and no output when the user already
+// decided with --extension or --no-extension.
+//
+// loaded is what start's --single-process error tells --no-extension about, so
+// it reports the append rather than being inferred from the option counts.
 //
 // A detected build is resolved here rather than trusted, so a broken one is a
 // hint instead of a fatal error out of loadExtensions later. The path appended
 // is the one resolved here: resolveExtension is deterministic, so loadExtensions
 // resolving it a second time cannot reach a different directory.
-func wxtStart(opts startOptions, dir, unpackRoot string) (out startOptions, notice, hint string) {
+func wxtStart(opts startOptions, dir, unpackRoot string) (out startOptions, loaded bool, notice, hint string) {
 	if opts.noExtension || len(opts.extensions) > 0 {
-		return opts, "", ""
+		return opts, false, "", ""
 	}
 	switch detectWXT(dir) {
 	case wxtBuilt:
 		path := filepath.Join(dir, wxtChromeOutput)
 		if _, err := resolveExtension(path, unpackRoot); err != nil {
-			return opts, "", fmt.Sprintf(
+			return opts, false, "", fmt.Sprintf(
 				"WXT project detected but %s could not be loaded: %v (pass --no-extension to silence this)",
 				wxtChromeOutput, err)
 		}
 		opts.extensions = append(opts.extensions, path)
-		return opts, fmt.Sprintf(
+		return opts, true, fmt.Sprintf(
 			"WXT project detected: loading %s (pass --no-extension to skip)", wxtChromeOutput), ""
 	case wxtUnbuilt:
-		return opts, "", fmt.Sprintf(
+		return opts, false, "", fmt.Sprintf(
 			`WXT project detected but %s is missing; run "wxt build" and start again to load it`,
 			wxtChromeOutput)
 	}
-	return opts, "", ""
+	return opts, false, "", ""
 }
 
 // wxtTipWanted suggests --local only when auto-scoping is about to put this

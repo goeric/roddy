@@ -543,7 +543,7 @@ func TestUnpackExtension_RejectsPathTraversal(t *testing.T) {
 // --- end to end ---
 
 // baseLauncher mirrors the flags an UNSANDBOXED start sets before
-// configureExtensions runs (a plain start is sandboxed, and applySandboxFlags
+// configureExtensions runs (a plain start is sandboxed, and useSingleProcess
 // gates single-process on the platform where this sets it unconditionally),
 // configureExperiments included: with the dev snapshot's field-trial config
 // left active the browser routes MV3 workers' organic fetches through

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"runtime"
 	"strings"
 	"testing"
 
@@ -66,10 +65,12 @@ func TestConfigureExperiments_LeavesRoomForLaterAppends(t *testing.T) {
 // On macOS --single-process makes any navigator.mediaDevices call abort the
 // browser; on Linux it is what makes screenshots work under gVisor.
 func TestSingleProcessSupported_SkipsMacOSOnly(t *testing.T) {
-	got := singleProcessSupported()
-	want := runtime.GOOS != "darwin"
-
-	if got != want {
-		t.Errorf("singleProcessSupported() = %v on %s, want %v", got, runtime.GOOS, want)
+	for _, goos := range []string{"linux", "windows", "freebsd"} {
+		if !singleProcessSupported(goos) {
+			t.Errorf("singleProcessSupported(%q) = false, want true", goos)
+		}
+	}
+	if singleProcessSupported("darwin") {
+		t.Error(`singleProcessSupported("darwin") = true, want false`)
 	}
 }
