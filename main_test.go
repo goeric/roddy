@@ -1840,10 +1840,7 @@ func TestProxyLogPath_LivesInStateDir(t *testing.T) {
 // A state file that outlived a reboot names a PID the system may have handed
 // to something else; the helper's port is what tells the two apart.
 func TestProxyHelperAlive(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
+	ln := listenLoopback(t)
 	port := ln.Addr().(*net.TCPAddr).Port
 	if !proxyHelperAlive(port) {
 		t.Errorf("proxyHelperAlive(%d) = false with a listener on it, want true", port)
@@ -1859,14 +1856,20 @@ func TestProxyHelperAlive(t *testing.T) {
 	}
 }
 
-// freePort returns a port nothing listens on, for the upstream-unreachable
-// paths.
-func freePort(t *testing.T) string {
+func listenLoopback(t *testing.T) net.Listener {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
+	return ln
+}
+
+// deadUpstream returns a loopback address nothing listens on, for the
+// upstream-unreachable paths.
+func deadUpstream(t *testing.T) string {
+	t.Helper()
+	ln := listenLoopback(t)
 	addr := ln.Addr().String()
 	if err := ln.Close(); err != nil {
 		t.Fatalf("close listener: %v", err)
@@ -1878,10 +1881,7 @@ func freePort(t *testing.T) string {
 // open sends the user to proxy.log for the cause: an unlogged failure leaves
 // that log empty. The credential must not go with it.
 func TestProxyConnect_LogsRejectedConnect(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
+	ln := listenLoopback(t)
 	defer ln.Close()
 	served := make(chan struct{})
 	go func() {
@@ -1917,7 +1917,7 @@ func TestProxyConnect_LogsRejectedConnect(t *testing.T) {
 }
 
 func TestProxyConnect_LogsDialFailure(t *testing.T) {
-	upstream := freePort(t)
+	upstream := deadUpstream(t)
 	var logged bytes.Buffer
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodConnect, "example.com:443", nil)
@@ -1936,7 +1936,7 @@ func TestProxyConnect_LogsDialFailure(t *testing.T) {
 }
 
 func TestProxyHTTP_LogsUpstreamFailure(t *testing.T) {
-	upstream := freePort(t)
+	upstream := deadUpstream(t)
 	var logged bytes.Buffer
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/page", nil)
@@ -2036,7 +2036,6 @@ func TestInsecureFlag_WithSelfSignedCert(t *testing.T) {
 	httpsServer.StartTLS()
 	defer httpsServer.Close()
 
-	// Test 1: the CLI's own launcher without --insecure should fail
 	t.Run("WithoutInsecureFlag", func(t *testing.T) {
 		page, cleanup := startLauncherPage(t, false)
 		defer cleanup()
@@ -2049,7 +2048,7 @@ func TestInsecureFlag_WithSelfSignedCert(t *testing.T) {
 			t.Fatalf("expected ERR_CERT_AUTHORITY_INVALID, got: %v", err)
 		}
 		// The message open prints, formatted from the real rod error.
-		msg := navigationFailure(err, &State{ChromePID: 1})
+		msg := navigationFailure(err, ownSession)
 		if strings.Count(msg, "navigation failed: ") != 1 {
 			t.Errorf("navigationFailure = %q, want the prefix exactly once", msg)
 		}
@@ -2058,7 +2057,6 @@ func TestInsecureFlag_WithSelfSignedCert(t *testing.T) {
 		}
 	})
 
-	// Test 2: the same launcher with --insecure should succeed
 	t.Run("WithInsecureFlag", func(t *testing.T) {
 		page, cleanup := startLauncherPage(t, true)
 		defer cleanup()

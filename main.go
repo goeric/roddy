@@ -652,16 +652,12 @@ func cmdStart(args []string) {
 		}
 	}
 
-	headless := opts.headless
-
 	// Check if already running
 	if s, err := loadState(); err == nil {
 		// Quietly, as stop does. An old helper still holds a descriptor on
 		// proxy.log, which this start truncates, and its later writes would
 		// punch holes in the log this start reports from: SIGTERM first, and
-		// it normally exits before the truncate below. Only while its port
-		// still accepts — a state file that outlived a reboot can name a PID
-		// the system recycled.
+		// it normally exits before the truncate below.
 		if proxyHelperAlive(s.ProxyPort) {
 			signalPID(s.ProxyPID)
 		}
@@ -753,7 +749,7 @@ func cmdStart(args []string) {
 	}
 
 	launch := func(unsandboxed bool) (*launcher.Launcher, string, error) {
-		l := newStartLauncher(dataDir, headless, unsandboxed, extensions, proxyPort, opts.ignoreCertErrors)
+		l := newStartLauncher(dataDir, opts.headless, unsandboxed, extensions, proxyPort, opts.ignoreCertErrors)
 		u, err := l.Launch()
 		return l, u, err
 	}
@@ -963,22 +959,22 @@ func normalizeOpenURL(url string) string {
 
 // isCertErrorText reports whether Chrome's error text names one of the errors
 // --ignore-certificate-errors bypasses: Chromium's IsCertificateError is the
-// ERR_CERT* range plus ERR_SSL_PINNED_KEY_NOT_IN_CERT_CHAIN.
+// ERR_CERT* range plus ERR_SSL_PINNED_KEY_NOT_IN_CERT_CHAIN. The other
+// ERR_SSL_* are handshake failures that neither installing a CA nor the flag
+// fixes.
 func isCertErrorText(msg string) bool {
 	return strings.Contains(msg, "ERR_CERT") ||
 		strings.Contains(msg, "ERR_SSL_PINNED_KEY_NOT_IN_CERT_CHAIN")
 }
 
-// navigationFailure formats a failed navigation. Chrome's certificate errors
-// ("net::ERR_CERT*" and ERR_SSL_PINNED_KEY_NOT_IN_CERT_CHAIN — the set
-// --ignore-certificate-errors bypasses; other ERR_SSL_* are handshake failures
-// neither fix touches) get the two fixes appended: roddy's own proxy helper
-// never terminates TLS, so the certificate is the server's or a TLS-inspecting
-// proxy's. Which fixes depends on the session: --insecure relaunches only a
-// Chrome roddy owns (ChromePID 0 is a connect session), and a session already
-// launched with the flag has no trust problem left for it to fix. A
-// *rod.NavigationError already reads "navigation failed: net::ERR_…", so the
-// prefix goes on its Reason rather than on its message.
+// navigationFailure formats a failed navigation. A certificate error gets the
+// two fixes appended: roddy's own proxy helper never terminates TLS, so the
+// certificate is the server's or a TLS-inspecting proxy's. Which fixes depends
+// on the session — --insecure relaunches only a Chrome roddy owns (ChromePID 0
+// is a connect session), and a session already launched with the flag has no
+// trust problem left for it to fix. A *rod.NavigationError already reads
+// "navigation failed: net::ERR_…", so the prefix goes on its Reason rather
+// than on its message.
 func navigationFailure(err error, s *State) string {
 	msg := "navigation failed: "
 	var navErr *rod.NavigationError
