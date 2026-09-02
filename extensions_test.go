@@ -545,16 +545,18 @@ func TestUnpackExtension_RejectsPathTraversal(t *testing.T) {
 // baseLauncher mirrors the flags an UNSANDBOXED start sets before
 // configureExtensions runs (a plain start is sandboxed, and useSingleProcess
 // gates single-process on the platform where this sets it unconditionally),
-// configureExperiments included: with the dev snapshot's field-trial config
-// left active the browser routes MV3 workers' organic fetches through
-// browser-level interception, which the shipped configuration does not — a
-// fixture without these flags tests a browser roddy never launches.
+// configureExperiments and configureSiteIsolation included: with the dev
+// snapshot's field-trial config left active the browser routes MV3 workers'
+// organic fetches through browser-level interception, which the shipped
+// configuration does not, and rod's launcher defaults put cross-site frames
+// back in one process — a fixture without these flags tests a browser roddy
+// never launches.
 func baseLauncher() *launcher.Launcher {
-	return configureExperiments(launcher.New().
+	return configureSiteIsolation(configureExperiments(launcher.New().
 		Set("no-sandbox").
 		Set("disable-gpu").
 		Set("single-process").
-		Leakless(false))
+		Leakless(false)))
 }
 
 // headlessMode reports the --headless value: "" for old headless (the flag is

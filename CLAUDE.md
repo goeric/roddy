@@ -40,6 +40,11 @@ rod v0.116.2:
 - `Page.Eval` CALLS a function literal; raw `Runtime.evaluate` does not — wrap
   expressions in an IIFE `(() => { return (expr); })()` or `{a: 1}` parses as a
   labelled block.
+- `launcher.New()` disables Site Isolation TWICE — `disable-features`
+  `site-per-process` and `--disable-site-isolation-trials`, either enough on its
+  own (puppeteer's 2018 OOPIF workaround). `configureSiteIsolation` undoes both;
+  it filters `disable-features` rather than re-Setting it, so it stays
+  order-independent with the other configure* helpers, which append.
 
 Chrome (pinned Chromium 128 via rod's cache):
 - Unpacked-extension IDs are a hash of the absolute path (a-p alphabet), so IDs
@@ -86,6 +91,13 @@ Chrome (pinned Chromium 128 via rod's cache):
   fetches through browser-level interception after all — so a test browser
   missing configureExperiments (as baseLauncher was) passes tests the shipped
   configuration fails.
+- Site Isolation shows up in CDP as targets: a cross-site iframe (the fixture
+  frames `localhost` from a `127.0.0.1` page — different sites, one listener)
+  is listed by browser-level `Target.getTargets` as type `iframe`, already
+  there when the parent's load event fires, in old and new headless alike and
+  with no `Target.setAutoAttach`. The parent's `Page.getFrameTree` then does
+  NOT list it; with isolation off the mirror image holds — no `iframe` target
+  ever (5s), child in the frame tree within 1ms.
 - rod's `Browser.Connect` ends with `SetDiscoverTargets{Discover: true}`, so
   the TargetCreated replay of existing targets fires before any EachEvent
   subscription exists and a later re-call is a no-transition no-op that

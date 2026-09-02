@@ -676,6 +676,8 @@ func newStartLauncher(c startLaunch) *launcher.Launcher {
 		UserDataDir(c.dataDir).
 		Headless(c.headless)
 
+	l = configureSiteIsolation(l)
+
 	l = applySandboxFlags(l, c.unsandboxed, c.singleProcess)
 
 	l = configureExperiments(l)

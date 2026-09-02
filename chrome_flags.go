@@ -51,3 +51,37 @@ func configureExperiments(l *launcher.Launcher) *launcher.Launcher {
 	return l.Set("disable-field-trial-config").
 		Append("disable-features", "HistoryEmbeddings")
 }
+
+// configureSiteIsolation puts Chromium's Site Isolation back.
+//
+// launcher.New() turns it off twice — "disable-features": {"site-per-process",
+// ...} and --disable-site-isolation-trials, either of which is enough on its
+// own — carrying puppeteer's 2018 OOPIF workaround forward
+// (puppeteer/puppeteer#2548). The renderer sandbox is the primary boundary and
+// roddy keeps it on, but with site isolation off one renderer process hosts
+// documents from several sites, so a renderer that is compromised anyway reads
+// them all: the second layer is worth the process.
+//
+// disable-features is filtered rather than rewritten because
+// configureExperiments and configureExtensions append values of their own; the
+// order the three run in must not matter. --single-process makes the process
+// model moot, and needs nothing here.
+func configureSiteIsolation(l *launcher.Launcher) *launcher.Launcher {
+	l = l.Delete("disable-site-isolation-trials")
+
+	disabled, ok := l.GetFlags("disable-features")
+	if !ok {
+		return l
+	}
+	kept := make([]string, 0, len(disabled))
+	for _, feature := range disabled {
+		if feature != "site-per-process" {
+			kept = append(kept, feature)
+		}
+	}
+	if len(kept) == 0 {
+		// An empty value would reach Chrome as "--disable-features=".
+		return l.Delete("disable-features")
+	}
+	return l.Set("disable-features", kept...)
+}
