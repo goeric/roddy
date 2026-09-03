@@ -118,24 +118,34 @@ Chrome (pinned Chromium 128 via rod's cache):
   answers a pause back on (every pause observed here carries "").
 - `Page.getFrameTree`'s `frame.unreachableUrl` is the only reliable mark of a
   committed error page: it holds the INTENDED url while `frame.url` is
-  `chrome-error://chromewebdata/`, and `page.Info()` reports the intended URL
-  too, so nothing else distinguishes an interstitial from a loaded page. Both
-  fields are empty on a good page. Measured in old headless (`--single-process`)
-  and new headless. Only `Page.navigate` returns an errorText — `history.back()`
-  /`forward()`, `Page.reload` and a click that fails return none.
-  The reason is recoverable only from the page's own DOM:
+  `chrome-error://chromewebdata/`; `page.Info()` reports the intended URL too.
+  Both empty on a good page. Holds in old headless with `--single-process`
+  (suite) and new headless (spike). Only `Page.navigate` returns an errorText;
+  rod's `NavigateBack`/`NavigateForward`/`Reload` are
+  `history.back()`/`history.forward()`/`location.reload()` evals and return
+  nothing (`Page.reload`, the `--hard` path, has no return field either). The
+  reason is recoverable only from the page's own DOM:
   `document.querySelector('.error-code').textContent` reads
   `net::ERR_CERT_AUTHORITY_INVALID` on the SSL interstitial (already prefixed;
-  it is the only one of the two pages that also gives the element the id
-  `error-code`) and a bare `ERR_CONNECTION_REFUSED` / `ERR_UNSAFE_PORT` on the
-  neterror page. A DNS failure never renders a net error at all: it shows the
-  DNS probe's result, `DNS_PROBE_STARTED` and then
-  `DNS_PROBE_FINISHED_NXDOMAIN` (`loadTimeData.data_.errorCode` is worse — it
-  is frozen at `DNS_PROBE_POSSIBLE`). `Network.loadingFailed` DOES carry the
-  true `net::ERR_NAME_NOT_RESOLVED` (type `Document`), but it must be armed
-  before the navigation: subscribing after `Page.navigateToHistoryEntry`
-  returns caught it 0 times in 10 — the request has already failed — and
-  `waitload` has no navigation of its own to arm around.
+  the only page that also gives the element the id `error-code` — spike) and a
+  bare `ERR_CONNECTION_REFUSED` (suite) / `ERR_UNSAFE_PORT` (spike) on the
+  neterror page; an HTTP error with an EMPTY body is an error page too —
+  `Page.navigate` reports `net::ERR_HTTP_RESPONSE_CODE_FAILURE` and
+  `.error-code` reads "HTTP ERROR 404" (spike); a body of any size makes it an
+  ordinary document. A DNS failure never renders a net error: the element shows
+  the DNS probe's result, `DNS_PROBE_STARTED` at the load event and
+  `DNS_PROBE_FINISHED_NXDOMAIN` once the probe ends (spike;
+  `loadTimeData.data_.errorCode` is worse, frozen at `DNS_PROBE_POSSIBLE`).
+  `Network.loadingFailed` (type `Document`) does carry the true `net::ERR_…`,
+  but only if armed before the navigation: subscribing after rod's
+  `NavigateForward` returned caught it 0 times in 10 (spike).
+  `back`/`forward`/`reload --hard` are not racy despite returning before the
+  navigation: Chrome holds renderer-bound DevTools messages while a navigation
+  is in flight, so the next Runtime call (WaitLoad's `readyState`) answers on
+  the new document (spike: a `readyState` eval after `history.forward()` into a
+  1.5s-slow failing target blocked 3s until the error page committed; 32
+  back/forward/reload --hard loops into a refused page leaked 0 false "loaded"
+  results).
 - Attaching a flat session to a worker WHILE its own intercepted request is
   in flight can wedge the next eval-launched fetch: the pause never surfaces
   on any session while page interception stays healthy, and the eval times

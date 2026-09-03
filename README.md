@@ -433,7 +433,7 @@ roddy reload --hard               # Reload bypassing cache
 roddy clear-cache                 # Clear the browser cache
 ```
 
-`back`, `forward` and `reload` fail with exit 2 on a Chrome error page, naming the net error (`error: navigation failed: net::ERR_CONNECTION_REFUSED`) instead of reporting the interstitial as loaded. A DNS failure is named the way Chrome renders it on the page — `DNS_PROBE_FINISHED_NXDOMAIN`, with the URL that failed.
+`back`, `forward`, `reload` and `waitload` fail with exit 2 when the page that committed is a Chrome error page, naming what Chrome shows and the URL that failed (`error: navigation failed: net::ERR_CONNECTION_REFUSED for http://…`); a certificate error carries the same `--insecure` hint `open` gives; a DNS failure is named as Chrome's DNS probe renders it — `DNS_PROBE_FINISHED_NXDOMAIN`, or `DNS_PROBE_STARTED` while the probe is still running.
 
 ### Extract information
 
@@ -480,7 +480,7 @@ roddy focus "#email"              # Focus element
 ```bash
 roddy wait ".loaded"       # Wait for element to appear and be visible
 roddy waitload             # Wait for page load event (exit 2 on a Chrome error page,
-                           # naming the net error)
+                           # naming what Chrome shows)
 roddy waitstable           # Wait for DOM to stop changing
 roddy waitidle             # Wait for network to be idle
 roddy sleep 2.5            # Sleep for N seconds
