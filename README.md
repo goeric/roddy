@@ -91,6 +91,7 @@ roddy start          →  launches Chrome (headless, persists after CLI exits)
                           saves WebSocket debug URL to ~/.roddy/state.json
 
 roddy connect H:P    →  connects to an existing Chrome on a remote debug port
+                          replaces the current session, as a second start does
                           saves WebSocket debug URL to ~/.roddy/state.json
 
 roddy open URL       →  connects to running Chrome via WebSocket
@@ -118,6 +119,12 @@ roddy connect host:9222                    # Connect to existing Chrome on remot
 roddy status                               # Show browser info and active page
 roddy stop                                 # Shut down Chrome
 ```
+
+A second `start`, and a `connect` to a different browser, replace the recorded
+session rather than adding one: the auth proxy helper is stopped and a Chrome
+roddy launched is closed (a browser attached with `connect` is left running).
+`connect` does this only once the new browser has answered, and not at all when
+it names the browser roddy is already driving.
 
 Chrome runs with its sandbox on by default. Running as root implies
 `--no-sandbox` — Chrome refuses to sandbox there — and so does a container
@@ -813,7 +820,7 @@ The tool uses the [rod](https://github.com/go-rod/rod) Go library which communic
 | Command | Arguments | Description |
 |---|---|---|
 | `start` | `[--show] [--insecure\|-k] [--no-sandbox] [--extension PATH] [--no-extension] [--single-process\|--no-single-process]` | Launch Chrome (headless by default, `--show` for visible) |
-| `connect` | `<host:port>` | Connect to existing Chrome on remote debug port |
+| `connect` | `<host:port>` | Connect to existing Chrome on remote debug port (replaces the current session, as a second `start` does) |
 | `stop` | | Shut down Chrome |
 | `status` | | Show browser status |
 | `extensions` | | List extensions loaded into this session |

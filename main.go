@@ -1102,6 +1102,43 @@ func cmdExtensions(args []string) {
 	}
 }
 
+// sameBrowser reports whether two debug URLs name the same browser. Chrome
+// answers /json/version with the host the request carried, so the browser
+// roddy launched is "ws://127.0.0.1:PORT/..." in its own state file and
+// "ws://localhost:PORT/..." to `roddy connect localhost:PORT` — only the path,
+// /devtools/browser/<uuid>, identifies it. Unparseable or path-less URLs fall
+// back to the whole string.
+func sameBrowser(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	ua, errA := url.Parse(a)
+	ub, errB := url.Parse(b)
+	if errA != nil || errB != nil || ua.Path == "" || ub.Path == "" {
+		return a == b
+	}
+	return ua.Path == ub.Path
+}
+
+// connectState decides the state a connect leaves behind. Attaching elsewhere
+// retires the recorded session exactly as start does — once the state file
+// names another browser, stop can never reach the old one, so a Chrome roddy
+// launched would be orphaned along with its proxy helper. Reconnecting to the
+// browser roddy already drives is the exception: retiring there would close the
+// very Chrome being attached to, so the recorded session is returned untouched
+// (cmdConnect saves nothing then). What happened goes to w.
+func connectState(old *State, debugURL string, w io.Writer) *State {
+	if old != nil {
+		if sameBrowser(old.DebugURL, debugURL) {
+			fmt.Fprintln(w, "note: already connected to this browser; session kept")
+			return old
+		}
+		retireSession(old, w)
+	}
+	// ChromePID 0 signals that we don't own this browser (stop won't kill it).
+	return &State{DebugURL: debugURL, ChromePID: 0, ActivePage: 0}
+}
+
 func cmdConnect(args []string) {
 	if len(args) < 1 {
 		fatal("usage: roddy connect <host:port>")
@@ -1134,14 +1171,15 @@ func cmdConnect(args []string) {
 		fatal("could not connect to browser: %v", err)
 	}
 
-	// ChromePID=0 signals that we don't own this browser (stop won't kill it)
-	state := &State{
-		DebugURL:   info.WebSocketDebuggerURL,
-		ChromePID:  0,
-		ActivePage: 0,
-	}
-	if err := saveState(state); err != nil {
-		fatal("failed to save state: %v", err)
+	// Retired only now that the new browser has answered: a fatal above leaves
+	// the user the session they had. No session yet is not an error here.
+	old, _ := loadState()
+	// A kept session comes back as the very pointer loadState returned; saving
+	// it would rewrite a file connect decided nothing about.
+	if state := connectState(old, info.WebSocketDebuggerURL, os.Stderr); state != old {
+		if err := saveState(state); err != nil {
+			fatal("failed to save state: %v", err)
+		}
 	}
 
 	fmt.Printf("Connected to browser at %s\n", hostport)

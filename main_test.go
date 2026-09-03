@@ -2681,6 +2681,70 @@ func TestRetireSession_ClosesAnOwnedBrowser(t *testing.T) {
 	}
 }
 
+// --- connectState ---
+
+// Chrome answers /json/version with the host the request used, so the same
+// browser is named "ws://localhost:PORT/..." to `connect localhost:PORT` and
+// "ws://127.0.0.1:PORT/..." to the launcher that started it.
+func TestSameBrowser(t *testing.T) {
+	const path = "/devtools/browser/54bd986d-983b-4c64-91c3-9e4cda9a90f0"
+	for _, tc := range []struct {
+		name string
+		a, b string
+		want bool
+	}{
+		{name: "identical", a: "ws://127.0.0.1:9222" + path, b: "ws://127.0.0.1:9222" + path, want: true},
+		{name: "host rewritten", a: "ws://127.0.0.1:9222" + path, b: "ws://localhost:9222" + path, want: true},
+		{name: "another browser", a: "ws://127.0.0.1:9222" + path, b: "ws://127.0.0.1:9223/devtools/browser/other", want: false},
+		{name: "empty old", a: "", b: "ws://127.0.0.1:9222" + path},
+		{name: "unparseable", a: "ws://%zz", b: "ws://%zz", want: true},
+		{name: "unparseable pair differs", a: "ws://%zz", b: "ws://%yy"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sameBrowser(tc.a, tc.b); got != tc.want {
+				t.Errorf("sameBrowser(%q, %q) = %v, want %v", tc.a, tc.b, got, tc.want)
+			}
+		})
+	}
+}
+
+// Nothing to retire and nothing to say: connect is the first command of the
+// session.
+func TestConnectState_WithNoPreviousSession(t *testing.T) {
+	const debugURL = "ws://127.0.0.1:9222/devtools/browser/new"
+	var notes bytes.Buffer
+	got := connectState(nil, debugURL, &notes)
+	if got.DebugURL != debugURL || got.ChromePID != 0 || got.ActivePage != 0 {
+		t.Errorf("connectState(nil) = %+v, want a fresh connect session at %s", got, debugURL)
+	}
+	if notes.Len() > 0 {
+		t.Errorf("notes = %q, want nothing when there was no session", notes.String())
+	}
+}
+
+// Attaching elsewhere leaves stop no way back to a Chrome roddy launched, so
+// connect closes it exactly as start does.
+func TestConnectState_ClosesAnOwnedChrome(t *testing.T) {
+	l, s := retireFixture(t)
+	s.ChromePID = l.PID()
+	mustSaveState(t, s)
+	const debugURL = "ws://127.0.0.1:9333/devtools/browser/elsewhere"
+
+	var notes bytes.Buffer
+	got := connectState(s, debugURL, &notes)
+
+	if want := fmt.Sprintf("note: stopping the previous Chrome (PID %d)\n", l.PID()); notes.String() != want {
+		t.Errorf("notes = %q, want %q", notes.String(), want)
+	}
+	waitProcessGone(t, l.PID())
+	if pidAlive(l.PID()) {
+		t.Errorf("Chrome (PID %d) still running after connect retired it", l.PID())
+	}
+	if got.DebugURL != debugURL || got.ChromePID != 0 {
+		t.Errorf("connectState = %+v, want a fresh connect session at %s", got, debugURL)
+	}
+}
+
 // --- navigationFailure ---
 
 // ownSession is what open works with unless the user attached with connect.

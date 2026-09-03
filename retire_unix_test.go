@@ -172,6 +172,68 @@ func TestRetireSession_LeavesAnUnresponsiveChromeWithoutEvidence(t *testing.T) {
 	}
 }
 
+// connect writes a state file naming another browser, so a helper left behind
+// would never be signalled by anything again: stop reads the new state and
+// start sees ProxyPort 0.
+func TestConnectState_RetiresAProxiedConnectSession(t *testing.T) {
+	t.Setenv("RODDY_HOME", t.TempDir())
+	helper := startSleepChild(t)
+	old := &State{
+		DebugURL:  "ws://127.0.0.1:9222/devtools/browser/x",
+		ProxyPID:  helper.pid,
+		ProxyPort: livePort(t),
+	}
+	const debugURL = "ws://127.0.0.1:9333/devtools/browser/y"
+
+	var notes bytes.Buffer
+	got := connectState(old, debugURL, &notes)
+
+	if err := helper.waitExit(t, 3*time.Second); err == nil || !strings.Contains(err.Error(), "signal: terminated") {
+		t.Errorf("helper exit = %v, want signal: terminated", err)
+	}
+	want := fmt.Sprintf("note: replacing the connected session at %s; that browser stays running\n", debugHost(old.DebugURL))
+	if notes.String() != want {
+		t.Errorf("notes = %q, want %q", notes.String(), want)
+	}
+	if got.DebugURL != debugURL || got.ChromePID != 0 || got.ProxyPID != 0 || got.ProxyPort != 0 {
+		t.Errorf("connectState = %+v, want a fresh connect session at %s", got, debugURL)
+	}
+}
+
+// Reconnecting to the browser roddy already drives must retire nothing: the
+// retire would close the very Chrome being attached to and drop the helper's
+// record with it.
+func TestConnectState_KeepsTheSessionForTheSameBrowser(t *testing.T) {
+	t.Setenv("RODDY_HOME", t.TempDir())
+	chrome, helper := startSleepChild(t), startSleepChild(t)
+	old := &State{
+		DebugURL:  "ws://127.0.0.1:9222/devtools/browser/x",
+		ChromePID: chrome.pid,
+		ProxyPID:  helper.pid,
+		ProxyPort: livePort(t),
+	}
+	mustSaveState(t, old)
+
+	var notes bytes.Buffer
+	got := connectState(old, "ws://localhost:9222/devtools/browser/x", &notes)
+
+	// A SIGTERM already sent lands well inside this; the wait only rules out
+	// racing the check against the signal.
+	time.Sleep(200 * time.Millisecond)
+	if !chrome.alive() {
+		t.Errorf("PID %d was signalled although connect named the browser roddy already drives", chrome.pid)
+	}
+	if !helper.alive() {
+		t.Errorf("proxy helper PID %d was signalled although the session was kept", helper.pid)
+	}
+	if got != old {
+		t.Errorf("connectState = %+v, want the recorded session %+v unchanged", got, old)
+	}
+	if !stateFileExists() {
+		t.Error("state file removed, want the session kept")
+	}
+}
+
 func TestProfileLockPID(t *testing.T) {
 	dir := t.TempDir()
 	if pid, ok := profileLockPID(dir); ok {
