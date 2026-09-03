@@ -54,7 +54,8 @@ roddy start              # launch headless Chrome (downloads its own Chromium on
 roddy start --show       # launch with a visible window (great for watching a repro)
 roddy start --extension <path>   # load a Chrome extension (works headless — see below)
 roddy start --insecure   # or -k: ignore certificate errors (self-signed dev servers,
-                         # TLS-inspecting proxies; open's cert error names this flag;
+                         # TLS-inspecting proxies; open's cert error names this flag (so do
+                         # back/forward/reload/waitload);
                          # such sessions say "certificate errors ignored" in start output and status)
 roddy start --no-sandbox # skip Chrome's sandbox (implied as root and in containers;
                          # unsandboxed sessions say "sandbox off" in start output and status)
@@ -296,14 +297,17 @@ Navigation & info:
 
 ```bash
 roddy open <url>            # navigate (use file://… for local HTML)
-roddy back / forward        # history
-roddy reload [--hard]       # reload (note: wipes page JS state — see console capture below)
+roddy back / forward        # history (exit 2 on a Chrome error page)
+roddy reload [--hard]       # reload (exit 2 on a Chrome error page; note: wipes page JS state
+                            # — see console capture below)
 roddy url                   # current URL
 roddy title                 # page title
 roddy html [selector]       # full page HTML, or one element's outerHTML
 roddy text <selector>       # an element's text content
 roddy attr <selector> <name># an attribute value
 ```
+
+`back`, `forward`, `reload` and `waitload` exit 2 when the page that committed is a Chrome error page, with what Chrome shows and the URL in the message (`error: navigation failed: net::ERR_CONNECTION_REFUSED for http://…`). After a `click`, `submit` or `js` that navigates, run `waitload` before `wait`/`assert` — it is the only command that names a failed navigation. `url` and `title` on such a page still print the intended URL and the error page's title.
 
 Interaction:
 
@@ -322,7 +326,7 @@ Synchronizing (do this instead of guessing with sleeps):
 
 ```bash
 roddy wait <selector>       # wait until an element appears
-roddy waitload              # wait for page load
+roddy waitload              # wait for page load (exit 2 on a Chrome error page)
 roddy waitstable            # wait for the DOM to stop changing
 roddy waitidle              # wait for network to go idle
 roddy sleep <seconds>       # last resort

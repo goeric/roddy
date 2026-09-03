@@ -67,9 +67,12 @@ Network stubbing:
 
 Navigation:
   roddy open <url>               Navigate to URL
-  roddy back                     Go back in history
-  roddy forward                  Go forward in history
-  roddy reload [--hard]          Reload page (--hard bypasses cache)
+  roddy back                     Go back in history (exit 2 on a Chrome error
+                                  page, naming what Chrome shows)
+  roddy forward                  Go forward in history (exit 2 on a Chrome
+                                  error page, naming what Chrome shows)
+  roddy reload [--hard]          Reload page (--hard bypasses cache; exit 2 on
+                                  a Chrome error page, naming what Chrome shows)
   roddy clear-cache              Clear the browser cache
 
 Page info:
@@ -103,7 +106,8 @@ Interaction:
 
 Waiting:
   roddy wait <selector>          Wait for element to appear
-  roddy waitload                 Wait for page load
+  roddy waitload                 Wait for page load (exit 2 on a Chrome error
+                                  page, naming what Chrome shows)
   roddy waitstable               Wait for DOM to stabilize
   roddy waitidle                 Wait for network idle
   roddy sleep <seconds>          Sleep for N seconds
