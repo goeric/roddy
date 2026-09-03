@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -41,6 +42,9 @@ func TestMain(m *testing.M) {
 		Set("no-sandbox").
 		Set("disable-gpu").
 		Set("single-process").
+		// A hijacking resolver answers .invalid, which would turn the DNS
+		// error-page test into a hard failure. RFC 2606 TLD only.
+		Set("host-resolver-rules", "MAP *.invalid ~NOTFOUND").
 		Headless(true).
 		Leakless(false)
 
@@ -59,6 +63,7 @@ func TestMain(m *testing.M) {
 	mux.HandleFunc("/download", handleDownload)
 	mux.HandleFunc("/testfile.txt", handleTestFile)
 	mux.HandleFunc("/empty", handleEmpty)
+	mux.HandleFunc("/onload-navigate", handleOnloadNavigate)
 	mux.HandleFunc("/sw-page", handleSWPage)
 	mux.HandleFunc("/page-sw.js", handlePageSW)
 	mux.HandleFunc("/logs-page", handleLogsPage)
@@ -177,6 +182,16 @@ func handleSWPage(w http.ResponseWriter, r *http.Request) {
   <script>navigator.serviceWorker.register("/page-sw.js");</script>
 </body>
 </html>`))
+}
+
+// handleOnloadNavigate serves a page that navigates itself to ?to= the moment
+// it loads, so the target this page is left on is not the one WaitLoad was
+// waiting for.
+func handleOnloadNavigate(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html")
+	fmt.Fprintf(w, `<!DOCTYPE html><html><head><title>Onload Navigate</title></head>
+<body><script>addEventListener("load", () => { location.href = %q; });</script></body></html>`,
+		r.URL.Query().Get("to"))
 }
 
 func handlePageSW(w http.ResponseWriter, r *http.Request) {
@@ -2762,7 +2777,10 @@ func errorPageFixture(t *testing.T) (*rod.Page, string) {
 
 func TestErrorPage_GoodPageIsNotOne(t *testing.T) {
 	page, _ := errorPageFixture(t)
-	unreachableURL, reason, ok := errorPage(page)
+	unreachableURL, reason, ok, err := errorPage(page)
+	if err != nil {
+		t.Fatalf("errorPage: %v", err)
+	}
 	if ok {
 		t.Errorf("errorPage on the fixture = (%q, %q, true), want ok false", unreachableURL, reason)
 	}
@@ -2777,7 +2795,10 @@ func TestErrorPage_ConnectionRefused(t *testing.T) {
 	if err := page.WaitLoad(); err != nil {
 		t.Fatalf("wait for load: %v", err)
 	}
-	unreachableURL, reason, ok := errorPage(page)
+	unreachableURL, reason, ok, err := errorPage(page)
+	if err != nil {
+		t.Fatalf("errorPage: %v", err)
+	}
 	if !ok {
 		t.Fatal("errorPage = ok false, want the committed error page reported")
 	}
@@ -2792,7 +2813,8 @@ func TestErrorPage_ConnectionRefused(t *testing.T) {
 // A DNS failure is the one case Chrome does not render a net error for: the
 // neterror page shows the DNS probe's own result ("DNS_PROBE_STARTED" until
 // the probe finishes, then "DNS_PROBE_FINISHED_NXDOMAIN"), never
-// "ERR_NAME_NOT_RESOLVED".
+// "ERR_NAME_NOT_RESOLVED". TestMain's host-resolver-rules keep .invalid off a
+// hijacking resolver, which would answer instead of failing.
 func TestErrorPage_UnreachableHost(t *testing.T) {
 	page, _ := errorPageFixture(t)
 	const target = "http://does-not-exist.invalid/"
@@ -2800,15 +2822,18 @@ func TestErrorPage_UnreachableHost(t *testing.T) {
 	if err := page.WaitLoad(); err != nil {
 		t.Fatalf("wait for load: %v", err)
 	}
-	unreachableURL, reason, ok := errorPage(page)
+	unreachableURL, reason, ok, err := errorPage(page)
+	if err != nil {
+		t.Fatalf("errorPage: %v", err)
+	}
 	if !ok {
 		t.Fatal("errorPage = ok false, want the committed error page reported")
 	}
 	if unreachableURL != target {
 		t.Errorf("unreachableURL = %q, want %q", unreachableURL, target)
 	}
-	if !strings.Contains(reason, "DNS_PROBE") && !strings.Contains(reason, "ERR_NAME_NOT_RESOLVED") {
-		t.Errorf("reason = %q, want the DNS probe result or the net error", reason)
+	if !strings.HasPrefix(reason, "DNS_PROBE_") {
+		t.Errorf("reason = %q, want the DNS probe result", reason)
 	}
 }
 
@@ -2829,7 +2854,10 @@ func TestErrorPage_SelfSignedCert(t *testing.T) {
 	if err := page.WaitLoad(); err != nil {
 		t.Fatalf("wait for load: %v", err)
 	}
-	unreachableURL, reason, ok := errorPage(page)
+	unreachableURL, reason, ok, err := errorPage(page)
+	if err != nil {
+		t.Fatalf("errorPage: %v", err)
+	}
 	if !ok {
 		t.Fatal("errorPage = ok false, want the SSL interstitial reported")
 	}
@@ -2850,8 +2878,8 @@ func TestErrorPage_HistoryAndReload(t *testing.T) {
 	if err := page.WaitLoad(); err != nil {
 		t.Fatalf("wait for load: %v", err)
 	}
-	if _, _, ok := errorPage(page); !ok {
-		t.Fatal("errorPage after Navigate = ok false, want the error page reported")
+	if _, _, ok, err := errorPage(page); err != nil || !ok {
+		t.Fatalf("errorPage after Navigate = (ok %v, err %v), want the error page reported", ok, err)
 	}
 
 	if err := page.NavigateBack(); err != nil {
@@ -2860,8 +2888,8 @@ func TestErrorPage_HistoryAndReload(t *testing.T) {
 	if err := page.WaitLoad(); err != nil {
 		t.Fatalf("wait for load after back: %v", err)
 	}
-	if unreachableURL, reason, ok := errorPage(page); ok {
-		t.Errorf("errorPage after back = (%q, %q, true), want the good page reported as fine", unreachableURL, reason)
+	if unreachableURL, reason, ok, err := errorPage(page); err != nil || ok {
+		t.Errorf("errorPage after back = (%q, %q, %v, %v), want the good page reported as fine", unreachableURL, reason, ok, err)
 	}
 
 	if err := page.NavigateForward(); err != nil {
@@ -2870,7 +2898,10 @@ func TestErrorPage_HistoryAndReload(t *testing.T) {
 	if err := page.WaitLoad(); err != nil {
 		t.Fatalf("wait for load after forward: %v", err)
 	}
-	unreachableURL, _, ok := errorPage(page)
+	unreachableURL, _, ok, err := errorPage(page)
+	if err != nil {
+		t.Fatalf("errorPage after forward: %v", err)
+	}
 	if !ok {
 		t.Fatal("errorPage after forward = ok false, want the error page reported")
 	}
@@ -2884,8 +2915,56 @@ func TestErrorPage_HistoryAndReload(t *testing.T) {
 	if err := page.WaitLoad(); err != nil {
 		t.Fatalf("wait for load after reload: %v", err)
 	}
-	if unreachableURL, _, ok := errorPage(page); !ok || unreachableURL != refused {
-		t.Errorf("errorPage after reload = (%q, _, %v), want (%q, _, true)", unreachableURL, ok, refused)
+	if unreachableURL, _, ok, err := errorPage(page); err != nil || !ok || unreachableURL != refused {
+		t.Errorf("errorPage after reload = (%q, _, %v, %v), want (%q, _, true, <nil>)", unreachableURL, ok, err, refused)
+	}
+}
+
+// --- loadFailure ---
+
+// loadFailure is the choke point every navigation command reports through:
+// waitLoaded only wraps it in fatal.
+func TestLoadFailure(t *testing.T) {
+	page, refused := errorPageFixture(t)
+	if err := loadFailure(page, ownSession); err != nil {
+		t.Errorf("loadFailure on the good fixture = %v, want nil", err)
+	}
+
+	// Navigate reports the failure itself; the error page still commits.
+	_ = page.Navigate(refused)
+	err := loadFailure(page, ownSession)
+	if err == nil {
+		t.Fatal("loadFailure on the committed error page = nil, want the failure")
+	}
+	const want = "navigation failed: net::ERR_CONNECTION_REFUSED"
+	if !strings.HasPrefix(err.Error(), want) {
+		t.Errorf("loadFailure = %q, want it to lead with %q", err, want)
+	}
+	if !strings.Contains(err.Error(), refused) {
+		t.Errorf("loadFailure = %q, want it to name %q", err, refused)
+	}
+}
+
+// A page that navigates itself in onload loses WaitLoad's target ("Inspected
+// target navigated or closed") while the error page it went to has already
+// committed. What Chrome shows outranks the lost target either way.
+func TestLoadFailure_OnloadNavigationOutranksTheWaitError(t *testing.T) {
+	_, refused := errorPageFixture(t)
+	page, err := env.browser.Page(proto.TargetCreateTarget{
+		URL: env.server.URL + "/onload-navigate?to=" + url.QueryEscape(refused),
+	})
+	if err != nil {
+		t.Fatalf("open the self-navigating fixture: %v", err)
+	}
+	t.Cleanup(func() { _ = page.Close() })
+
+	failure := loadFailure(page, ownSession)
+	if failure == nil {
+		t.Fatal("loadFailure = nil, want the error page the fixture navigated to")
+	}
+	want := "navigation failed: net::ERR_CONNECTION_REFUSED for " + refused
+	if failure.Error() != want {
+		t.Errorf("loadFailure = %q, want %q", failure, want)
 	}
 }
 
@@ -2898,9 +2977,10 @@ func TestErrorPageFailure(t *testing.T) {
 		reason string
 		want   string
 	}{
-		{"neterror page", "ERR_CONNECTION_REFUSED", "navigation failed: net::ERR_CONNECTION_REFUSED"},
-		{"ssl interstitial keeps one prefix", "net::ERR_CERT_AUTHORITY_INVALID", "navigation failed: net::ERR_CERT_AUTHORITY_INVALID"},
+		{"neterror page", "ERR_CONNECTION_REFUSED", "navigation failed: net::ERR_CONNECTION_REFUSED for " + url},
+		{"ssl interstitial keeps one prefix", "net::ERR_CERT_AUTHORITY_INVALID", "navigation failed: net::ERR_CERT_AUTHORITY_INVALID for " + url},
 		{"dns probe result is not a net error", "DNS_PROBE_FINISHED_NXDOMAIN", "navigation failed: DNS_PROBE_FINISHED_NXDOMAIN for " + url},
+		{"an empty body is an error page too", "HTTP ERROR 404", "navigation failed: HTTP ERROR 404 for " + url},
 		{"no reason names the URL", "", "navigation failed: Chrome shows an error page for " + url},
 	}
 	for _, c := range cases {
@@ -2909,10 +2989,33 @@ func TestErrorPageFailure(t *testing.T) {
 			if !strings.HasPrefix(msg, c.want) {
 				t.Errorf("navigationFailure(errorPageFailure(%q, %q)) = %q, want it to lead with %q", url, c.reason, msg, c.want)
 			}
-			// The cert hint has to reach the reason path too.
+			// isCertErrorText matches by substring, so the trailing URL
+			// leaves the cert hint on the reason path.
 			wantHint := strings.Contains(c.reason, "ERR_CERT")
 			if got := strings.Contains(msg, "install its CA"); got != wantHint {
 				t.Errorf("navigationFailure(errorPageFailure(%q, %q)) = %q, hinted = %v, want %v", url, c.reason, msg, got, wantHint)
+			}
+		})
+	}
+}
+
+// --- statusCurrent ---
+
+func TestStatusCurrent(t *testing.T) {
+	cases := []struct {
+		name                   string
+		title, url             string
+		unreachableURL, reason string
+		want                   string
+	}{
+		{"loaded page", "Example Domain", "https://example.com/", "", "", "Example Domain - https://example.com/"},
+		{"error page", "Privacy error", "https://self-signed.test/", "https://self-signed.test/", "net::ERR_CERT_AUTHORITY_INVALID", "Chrome error page for https://self-signed.test/ (net::ERR_CERT_AUTHORITY_INVALID)"},
+		{"error page with no reason", "", "http://127.0.0.1:1/", "http://127.0.0.1:1/", "", "Chrome error page for http://127.0.0.1:1/"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := statusCurrent(c.title, c.url, c.unreachableURL, c.reason); got != c.want {
+				t.Errorf("statusCurrent(%q, %q, %q, %q) = %q, want %q", c.title, c.url, c.unreachableURL, c.reason, got, c.want)
 			}
 		})
 	}

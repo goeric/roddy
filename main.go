@@ -257,55 +257,71 @@ func adjustActivePage(active, closed, count int) int {
 // panic; the Must* forms dump a Go stack trace at the user. A load that
 // finished on one of Chrome's error pages is a failure too: only navigate
 // returns an errorText, so back, forward, reload and waitload would otherwise
-// report the interstitial as loaded.
+// report the error page as loaded.
 func waitLoaded(page *rod.Page, s *State) {
-	if err := page.WaitLoad(); err != nil {
-		fatal("page did not finish loading: %v", err)
+	if err := loadFailure(page, s); err != nil {
+		fatal("%s", err)
 	}
-	if unreachableURL, reason, ok := errorPage(page); ok {
-		fatal("%s", navigationFailure(errorPageFailure(unreachableURL, reason), s))
+}
+
+// loadFailure returns why the page is unusable, or nil. A committed error page
+// outranks the WaitLoad error: a page that navigates itself to a failing URL
+// in onload fails WaitLoad with "Inspected target navigated or closed" while
+// the error page has already committed by the time the next message is
+// answered. A frame tree that cannot be read is reported rather than taken for
+// a good page: "page loaded, but its state could not be read: %v".
+func loadFailure(page *rod.Page, s *State) error {
+	waitErr := page.WaitLoad()
+	unreachableURL, reason, ok, err := errorPage(page)
+	switch {
+	case ok:
+		return errors.New(navigationFailure(errorPageFailure(unreachableURL, reason), s))
+	case waitErr != nil:
+		return fmt.Errorf("page did not finish loading: %v", waitErr)
+	case err != nil:
+		return fmt.Errorf("page loaded, but its state could not be read: %v", err)
 	}
+	return nil
 }
 
 // errorPage reports whether the page's main frame is one of Chrome's error
 // pages, with the URL that failed and, best effort, the reason Chrome renders
 // on it. page.Info() is no help: it reports the intended URL, so a committed
 // error page is indistinguishable from a loaded one there.
-func errorPage(page *rod.Page) (unreachableURL, reason string, ok bool) {
+func errorPage(page *rod.Page) (unreachableURL, reason string, ok bool, err error) {
 	tree, err := proto.PageGetFrameTree{}.Call(page)
 	if err != nil {
-		return "", "", false
+		return "", "", false, err
 	}
 	unreachableURL = tree.FrameTree.Frame.UnreachableURL
 	if unreachableURL == "" {
-		return "", "", false
+		return "", "", false, nil
 	}
-	// Both error pages carry the code in .error-code; only the SSL
-	// interstitial gives it the id "error-code". An unreadable one is not a
-	// reason to withhold the failure.
-	if v, err := page.Eval(`() => { const e = document.querySelector('.error-code'); return e ? e.textContent.trim() : ""; }`); err == nil {
+	// The neterror page and the SSL interstitial both put the code in
+	// .error-code; only the interstitial also gives it the id "error-code". An
+	// unreadable one is not a reason to withhold the failure.
+	if v, evalErr := page.Eval(`() => { const e = document.querySelector('.error-code'); return e ? e.textContent.trim() : ""; }`); evalErr == nil {
 		reason = v.Value.Str()
 	}
-	return unreachableURL, reason, true
+	return unreachableURL, reason, true, nil
 }
 
 // errorPageFailure builds the error waitLoaded hands navigationFailure for a
 // committed error page. Chrome renders the reason already prefixed on the SSL
 // interstitial ("net::ERR_CERT_AUTHORITY_INVALID") and bare on the neterror
-// page ("ERR_CONNECTION_REFUSED"). A DNS failure is rendered as the DNS
-// probe's own result ("DNS_PROBE_FINISHED_NXDOMAIN"), never as a net error —
-// prefixing that with "net::" would invent a code Chrome never emits, so it
-// travels verbatim with the URL that failed.
+// page ("ERR_CONNECTION_REFUSED"). A DNS failure renders the DNS probe's
+// result instead ("DNS_PROBE_STARTED", then "DNS_PROBE_FINISHED_NXDOMAIN"),
+// which is not a net error and is not prefixed; an HTTP error with an empty
+// body renders "HTTP ERROR <code>". Whatever it is goes out with the URL that
+// failed.
 func errorPageFailure(unreachableURL, reason string) error {
 	switch {
-	case strings.HasPrefix(reason, "net::"):
-		return errors.New(reason)
+	case reason == "":
+		return fmt.Errorf("Chrome shows an error page for %s", unreachableURL)
 	case strings.HasPrefix(reason, "ERR_"):
-		return errors.New("net::" + reason)
-	case reason != "":
-		return fmt.Errorf("%s for %s", reason, unreachableURL)
+		reason = "net::" + reason
 	}
-	return fmt.Errorf("Chrome shows an error page for %s", unreachableURL)
+	return fmt.Errorf("%s for %s", reason, unreachableURL)
 }
 
 // typeInto replaces an input's content, clearing it when text is empty.
@@ -1156,6 +1172,20 @@ func cmdStop(args []string) {
 	fmt.Println("Chrome stopped")
 }
 
+// statusCurrent formats status's "Current:" line. A committed error page has
+// to be named as one: page.Info() reports the intended URL and the error
+// page's own title, so it would otherwise print as "Privacy error - <url>",
+// indistinguishable from a page that loaded.
+func statusCurrent(title, url, unreachableURL, reason string) string {
+	switch {
+	case unreachableURL == "":
+		return fmt.Sprintf("%s - %s", title, url)
+	case reason == "":
+		return fmt.Sprintf("Chrome error page for %s", unreachableURL)
+	}
+	return fmt.Sprintf("Chrome error page for %s (%s)", unreachableURL, reason)
+}
+
 func cmdStatus(args []string) {
 	s, err := loadState()
 	if err != nil {
@@ -1181,7 +1211,10 @@ func cmdStatus(args []string) {
 	if page, err := getActivePage(browser, s); err == nil {
 		info, _ := page.Info()
 		if info != nil {
-			fmt.Printf("Current: %s - %s\n", info.Title, info.URL)
+			// status reports; a frame tree it cannot read leaves the
+			// ordinary line rather than failing the whole command.
+			unreachableURL, reason, _, _ := errorPage(page)
+			fmt.Printf("Current: %s\n", statusCurrent(info.Title, info.URL, unreachableURL, reason))
 		}
 	}
 }
