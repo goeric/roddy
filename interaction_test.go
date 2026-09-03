@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/proto"
 )
 
@@ -36,6 +35,15 @@ func shortTimeout(t *testing.T, d time.Duration) {
 	previous := defaultTimeout
 	defaultTimeout = d
 	t.Cleanup(func() { defaultTimeout = previous })
+}
+
+// assertDeadline fails unless the browser or page carries one: the per-command
+// budget is the browser's, and every page built from it inherits that context.
+func assertDeadline(t *testing.T, what string, target interface{ GetContext() context.Context }) {
+	t.Helper()
+	if _, ok := target.GetContext().Deadline(); !ok {
+		t.Errorf("%s carries no deadline", what)
+	}
 }
 
 // hiddenActiveSession launches a browser of its own with two pages, points the
@@ -152,8 +160,7 @@ func TestRaiseThenClick_BackgroundedTargetDoesNotHang(t *testing.T) {
 	if err != nil {
 		t.Fatalf("element on the backgrounded page: %v", err)
 	}
-	bringToFront(background)
-	if err := paintFailure(background); err != nil {
+	if err := raise(background); err != nil {
 		t.Fatalf("the raised page does not paint: %v", err)
 	}
 
@@ -172,11 +179,9 @@ func TestRaiseThenClick_BackgroundedTargetDoesNotHang(t *testing.T) {
 	}
 }
 
-// paintFailure is the guard for a target activateTarget selected but could not
-// get rendered -- a minimized or occluded window. It must fire on a tab that
-// produces no frames and stay quiet on one that does, whatever
-// document.visibilityState claims: a raised tab reading "hidden" still clicks
-// and still captures, so the frame is the only honest test.
+// paintFailure must fire on a tab that produces no frames and stay quiet on
+// one that does -- whatever document.visibilityState claims, which is why the
+// raised half reports that state instead of asserting on it.
 func TestPaintFailure(t *testing.T) {
 	background, _ := openTwoPages(t)
 
@@ -207,14 +212,14 @@ func TestRaise_RaisesTheActivePage(t *testing.T) {
 		t.Fatalf("withPage returned target %s, want the session's active page %s",
 			page.TargetID, hiddenID)
 	}
-	if _, ok := browser.GetContext().Deadline(); !ok {
-		t.Error("the browser carries no deadline; the per-command budget is the browser's")
-	}
+	assertDeadline(t, "the browser withPage connected", browser)
 	if got := visibilityState(t, page); got != "hidden" {
 		t.Fatalf("the active page is %q before the raise, want %q", got, "hidden")
 	}
 
-	raise(page)
+	if err := raise(page); err != nil {
+		t.Fatalf("raise the active page: %v", err)
+	}
 
 	// The frame is what the interaction waits for; visibilityState only
 	// corroborates it on a browser with one activation in its history.
@@ -233,9 +238,7 @@ func TestWithPage_LeavesTheForegroundAlone(t *testing.T) {
 
 	_, browser, page := withPage()
 
-	if _, ok := browser.GetContext().Deadline(); !ok {
-		t.Error("the browser carries no deadline; the per-command budget is the browser's")
-	}
+	assertDeadline(t, "the browser withPage connected", browser)
 	if got := visibilityState(t, page); got != "hidden" {
 		t.Errorf("visibilityState = %q after withPage, want %q -- a read raised the tab", got, "hidden")
 	}
@@ -273,15 +276,16 @@ func TestWithPage_BrowserDeadlineBoundsAnInteractionOnAHiddenTarget(t *testing.T
 func TestWaitsThatDoNotNeedTheForeground(t *testing.T) {
 	background, _ := openTwoPages(t)
 
-	el, err := background.Timeout(20 * time.Second).Element("h1")
+	page := background.Timeout(20 * time.Second)
+	el, err := page.Element("h1")
 	if err != nil {
 		t.Fatalf("element on the backgrounded page: %v", err)
 	}
-	if err := awaitError(t, 20*time.Second, "WaitVisible on a hidden target", el.WaitVisible); err != nil {
+	if err := awaitError(t, 30*time.Second, "WaitVisible on a hidden target", el.WaitVisible); err != nil {
 		t.Errorf("Element.WaitVisible on a hidden target: %v", err)
 	}
 	if err := awaitError(t, 30*time.Second, "WaitStable on a hidden target", func() error {
-		return background.Timeout(20 * time.Second).WaitStable(time.Second)
+		return page.WaitStable(time.Second)
 	}); err != nil {
 		t.Errorf("Page.WaitStable on a hidden target: %v", err)
 	}
@@ -401,12 +405,5 @@ func TestConnectBrowserTimeout_PagesInheritTheBrowserDeadline(t *testing.T) {
 	}
 	for _, p := range pages {
 		assertDeadline(t, "a page from Pages() on a deadlined browser", p)
-	}
-}
-
-func assertDeadline(t *testing.T, what string, page *rod.Page) {
-	t.Helper()
-	if _, ok := page.GetContext().Deadline(); !ok {
-		t.Errorf("%s carries no deadline", what)
 	}
 }
