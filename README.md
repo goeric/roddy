@@ -433,6 +433,8 @@ roddy reload --hard               # Reload bypassing cache
 roddy clear-cache                 # Clear the browser cache
 ```
 
+`back`, `forward` and `reload` fail with exit 2 on a Chrome error page, naming the net error (`error: navigation failed: net::ERR_CONNECTION_REFUSED`) instead of reporting the interstitial as loaded. A DNS failure is named the way Chrome renders it on the page — `DNS_PROBE_FINISHED_NXDOMAIN`, with the URL that failed.
+
 ### Extract information
 
 ```bash
@@ -477,7 +479,8 @@ roddy focus "#email"              # Focus element
 
 ```bash
 roddy wait ".loaded"       # Wait for element to appear and be visible
-roddy waitload             # Wait for page load event
+roddy waitload             # Wait for page load event (exit 2 on a Chrome error page,
+                           # naming the net error)
 roddy waitstable           # Wait for DOM to stop changing
 roddy waitidle             # Wait for network to be idle
 roddy sleep 2.5            # Sleep for N seconds
@@ -767,7 +770,7 @@ This is necessary because Chrome cannot natively authenticate to proxies during 
 
 ### Certificate errors behind a proxy
 
-The local helper is a transparent CONNECT tunnel: it never terminates TLS, so it originates no certificate error. A `net::ERR_CERT_*` behind a proxy is the target's own certificate or an upstream proxy that inspects TLS and re-signs with its own CA. `start` keeps certificate validation on that path, and `open` (and `newpage`) names both fixes when it hits one:
+The local helper is a transparent CONNECT tunnel: it never terminates TLS, so it originates no certificate error. A `net::ERR_CERT_*` behind a proxy is the target's own certificate or an upstream proxy that inspects TLS and re-signs with its own CA. `start` keeps certificate validation on that path, and `open` (and `newpage`, `back`, `forward`, `reload`, `waitload`) names both fixes when it hits one:
 
 - Install that CA where Chrome reads it. On Linux that is the NSS shared DB — Chrome reads it from `~/.pki/nssdb` only, and ignores `--user-data-dir` for trust:
 
@@ -839,7 +842,7 @@ The tool uses the [rod](https://github.com/go-rod/rod) Go library which communic
 | `hover` | `<selector>` | Hover over element |
 | `focus` | `<selector>` | Focus element |
 | `wait` | `<selector>` | Wait for element to appear |
-| `waitload` | | Wait for page load |
+| `waitload` | | Wait for page load (exit 2 on a Chrome error page) |
 | `waitstable` | | Wait for DOM stability |
 | `waitidle` | | Wait for network idle |
 | `sleep` | `<seconds>` | Sleep N seconds |

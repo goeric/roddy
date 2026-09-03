@@ -254,11 +254,58 @@ func adjustActivePage(active, closed, count int) int {
 }
 
 // waitLoaded reports a load that never finishes as an error instead of a
-// panic; the Must* forms dump a Go stack trace at the user.
-func waitLoaded(page *rod.Page) {
+// panic; the Must* forms dump a Go stack trace at the user. A load that
+// finished on one of Chrome's error pages is a failure too: only navigate
+// returns an errorText, so back, forward, reload and waitload would otherwise
+// report the interstitial as loaded.
+func waitLoaded(page *rod.Page, s *State) {
 	if err := page.WaitLoad(); err != nil {
 		fatal("page did not finish loading: %v", err)
 	}
+	if unreachableURL, reason, ok := errorPage(page); ok {
+		fatal("%s", navigationFailure(errorPageFailure(unreachableURL, reason), s))
+	}
+}
+
+// errorPage reports whether the page's main frame is one of Chrome's error
+// pages, with the URL that failed and, best effort, the reason Chrome renders
+// on it. page.Info() is no help: it reports the intended URL, so a committed
+// error page is indistinguishable from a loaded one there.
+func errorPage(page *rod.Page) (unreachableURL, reason string, ok bool) {
+	tree, err := proto.PageGetFrameTree{}.Call(page)
+	if err != nil {
+		return "", "", false
+	}
+	unreachableURL = tree.FrameTree.Frame.UnreachableURL
+	if unreachableURL == "" {
+		return "", "", false
+	}
+	// Both error pages carry the code in .error-code; only the SSL
+	// interstitial gives it the id "error-code". An unreadable one is not a
+	// reason to withhold the failure.
+	if v, err := page.Eval(`() => { const e = document.querySelector('.error-code'); return e ? e.textContent.trim() : ""; }`); err == nil {
+		reason = v.Value.Str()
+	}
+	return unreachableURL, reason, true
+}
+
+// errorPageFailure builds the error waitLoaded hands navigationFailure for a
+// committed error page. Chrome renders the reason already prefixed on the SSL
+// interstitial ("net::ERR_CERT_AUTHORITY_INVALID") and bare on the neterror
+// page ("ERR_CONNECTION_REFUSED"). A DNS failure is rendered as the DNS
+// probe's own result ("DNS_PROBE_FINISHED_NXDOMAIN"), never as a net error —
+// prefixing that with "net::" would invent a code Chrome never emits, so it
+// travels verbatim with the URL that failed.
+func errorPageFailure(unreachableURL, reason string) error {
+	switch {
+	case strings.HasPrefix(reason, "net::"):
+		return errors.New(reason)
+	case strings.HasPrefix(reason, "ERR_"):
+		return errors.New("net::" + reason)
+	case reason != "":
+		return fmt.Errorf("%s for %s", reason, unreachableURL)
+	}
+	return fmt.Errorf("Chrome shows an error page for %s", unreachableURL)
 }
 
 // typeInto replaces an input's content, clearing it when text is empty.
@@ -1236,7 +1283,7 @@ func cmdOpen(args []string) {
 			fatal("%s", navigationFailure(err, s))
 		}
 	}
-	waitLoaded(page)
+	waitLoaded(page, s)
 	info, _ := page.Info()
 	if info != nil {
 		fmt.Println(info.Title)
@@ -1244,11 +1291,11 @@ func cmdOpen(args []string) {
 }
 
 func cmdBack(args []string) {
-	_, _, page := withPage()
+	s, _, page := withPage()
 	if err := page.NavigateBack(); err != nil {
 		fatal("back failed: %v", err)
 	}
-	waitLoaded(page)
+	waitLoaded(page, s)
 	info, _ := page.Info()
 	if info != nil {
 		fmt.Println(info.URL)
@@ -1256,11 +1303,11 @@ func cmdBack(args []string) {
 }
 
 func cmdForward(args []string) {
-	_, _, page := withPage()
+	s, _, page := withPage()
 	if err := page.NavigateForward(); err != nil {
 		fatal("forward failed: %v", err)
 	}
-	waitLoaded(page)
+	waitLoaded(page, s)
 	info, _ := page.Info()
 	if info != nil {
 		fmt.Println(info.URL)
@@ -1272,7 +1319,7 @@ func cmdReload(args []string) {
 	fs.SetOutput(io.Discard)
 	hard := fs.Bool("hard", false, "")
 	fs.Parse(args)
-	_, _, page := withPage()
+	s, _, page := withPage()
 	if *hard {
 		// CDP Page.reload with ignoreCache (equivalent to Shift+Refresh)
 		err := (proto.PageReload{IgnoreCache: true}).Call(page)
@@ -1282,7 +1329,7 @@ func cmdReload(args []string) {
 	} else if err := page.Reload(); err != nil {
 		fatal("reload failed: %v", err)
 	}
-	waitLoaded(page)
+	waitLoaded(page, s)
 	fmt.Println("Reloaded")
 }
 
@@ -1763,8 +1810,8 @@ func cmdWait(args []string) {
 }
 
 func cmdWaitLoad(args []string) {
-	_, _, page := withPage()
-	waitLoaded(page)
+	s, _, page := withPage()
+	waitLoaded(page, s)
 	fmt.Println("Page loaded")
 }
 
@@ -1971,7 +2018,7 @@ func cmdNewPage(args []string) {
 		fatal("%s", navigationFailure(err, s))
 	}
 	if url != "" {
-		waitLoaded(page)
+		waitLoaded(page, s)
 	}
 
 	// Switch active to the new page

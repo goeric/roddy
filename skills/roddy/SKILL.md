@@ -56,6 +56,11 @@ roddy start --extension <path>   # load a Chrome extension (works headless — s
 roddy start --insecure   # or -k: ignore certificate errors (self-signed dev servers,
                          # TLS-inspecting proxies; open's cert error names this flag;
                          # such sessions say "certificate errors ignored" in start output and status)
+                         # `back`, `forward`, `reload` and `waitload` fail the same way (exit 2,
+                         # "navigation failed: net::ERR_...") when they land on a Chrome error
+                         # page, rather than reporting the interstitial as loaded — so a failed
+                         # navigation is never mistaken for a page. `url`/`title` still report
+                         # the intended URL and the interstitial's title.
 roddy start --no-sandbox # skip Chrome's sandbox (implied as root and in containers;
                          # unsandboxed sessions say "sandbox off" in start output and status)
 roddy start --no-single-process  # keep Chrome multi-process for crash isolation (unsandboxed non-macOS

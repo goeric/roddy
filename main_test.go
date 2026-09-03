@@ -2742,6 +2742,182 @@ func TestNavigationFailure_RodErrorKeepsOnePrefix(t *testing.T) {
 	}
 }
 
+// --- errorPage ---
+
+// errorPageFixture returns a page of the shared browser parked on the good
+// fixture, plus a URL nothing listens on. A closed listener's port is refused
+// straight away, so no test here waits on a DNS probe unless it means to.
+func errorPageFixture(t *testing.T) (*rod.Page, string) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	refused := "http://" + ln.Addr().String() + "/"
+	if err := ln.Close(); err != nil {
+		t.Fatalf("close listener: %v", err)
+	}
+	return navigateTo(t, "/"), refused
+}
+
+func TestErrorPage_GoodPageIsNotOne(t *testing.T) {
+	page, _ := errorPageFixture(t)
+	unreachableURL, reason, ok := errorPage(page)
+	if ok {
+		t.Errorf("errorPage on the fixture = (%q, %q, true), want ok false", unreachableURL, reason)
+	}
+}
+
+// The reason Chrome renders for a refused connection is the net error name,
+// unprefixed.
+func TestErrorPage_ConnectionRefused(t *testing.T) {
+	page, refused := errorPageFixture(t)
+	// Navigate reports the failure itself; the error page still commits.
+	_ = page.Navigate(refused)
+	if err := page.WaitLoad(); err != nil {
+		t.Fatalf("wait for load: %v", err)
+	}
+	unreachableURL, reason, ok := errorPage(page)
+	if !ok {
+		t.Fatal("errorPage = ok false, want the committed error page reported")
+	}
+	if unreachableURL != refused {
+		t.Errorf("unreachableURL = %q, want %q", unreachableURL, refused)
+	}
+	if reason != "ERR_CONNECTION_REFUSED" {
+		t.Errorf("reason = %q, want %q", reason, "ERR_CONNECTION_REFUSED")
+	}
+}
+
+// A DNS failure is the one case Chrome does not render a net error for: the
+// neterror page shows the DNS probe's own result ("DNS_PROBE_STARTED" until
+// the probe finishes, then "DNS_PROBE_FINISHED_NXDOMAIN"), never
+// "ERR_NAME_NOT_RESOLVED".
+func TestErrorPage_UnreachableHost(t *testing.T) {
+	page, _ := errorPageFixture(t)
+	const target = "http://does-not-exist.invalid/"
+	_ = page.Navigate(target)
+	if err := page.WaitLoad(); err != nil {
+		t.Fatalf("wait for load: %v", err)
+	}
+	unreachableURL, reason, ok := errorPage(page)
+	if !ok {
+		t.Fatal("errorPage = ok false, want the committed error page reported")
+	}
+	if unreachableURL != target {
+		t.Errorf("unreachableURL = %q, want %q", unreachableURL, target)
+	}
+	if !strings.Contains(reason, "DNS_PROBE") && !strings.Contains(reason, "ERR_NAME_NOT_RESOLVED") {
+		t.Errorf("reason = %q, want the DNS probe result or the net error", reason)
+	}
+}
+
+func TestErrorPage_SelfSignedCert(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Write([]byte(`<!DOCTYPE html><html><head><title>Secure Test</title></head><body></body></html>`))
+	})
+	httpsServer := httptest.NewUnstartedServer(mux)
+	// Expected handshake failures would otherwise litter the test output.
+	httpsServer.Config.ErrorLog = log.New(io.Discard, "", 0)
+	httpsServer.StartTLS()
+	defer httpsServer.Close()
+
+	page, _ := errorPageFixture(t)
+	_ = page.Navigate(httpsServer.URL + "/")
+	if err := page.WaitLoad(); err != nil {
+		t.Fatalf("wait for load: %v", err)
+	}
+	unreachableURL, reason, ok := errorPage(page)
+	if !ok {
+		t.Fatal("errorPage = ok false, want the SSL interstitial reported")
+	}
+	if unreachableURL != httpsServer.URL+"/" {
+		t.Errorf("unreachableURL = %q, want %q", unreachableURL, httpsServer.URL+"/")
+	}
+	// The interstitial renders the reason already prefixed.
+	if reason != "net::ERR_CERT_AUTHORITY_INVALID" {
+		t.Errorf("reason = %q, want %q", reason, "net::ERR_CERT_AUTHORITY_INVALID")
+	}
+}
+
+// back, forward and reload return no errorText of their own — the frame tree
+// is the only signal that they landed on an error page. This is issue #18.
+func TestErrorPage_HistoryAndReload(t *testing.T) {
+	page, refused := errorPageFixture(t)
+	_ = page.Navigate(refused)
+	if err := page.WaitLoad(); err != nil {
+		t.Fatalf("wait for load: %v", err)
+	}
+	if _, _, ok := errorPage(page); !ok {
+		t.Fatal("errorPage after Navigate = ok false, want the error page reported")
+	}
+
+	if err := page.NavigateBack(); err != nil {
+		t.Fatalf("back: %v", err)
+	}
+	if err := page.WaitLoad(); err != nil {
+		t.Fatalf("wait for load after back: %v", err)
+	}
+	if unreachableURL, reason, ok := errorPage(page); ok {
+		t.Errorf("errorPage after back = (%q, %q, true), want the good page reported as fine", unreachableURL, reason)
+	}
+
+	if err := page.NavigateForward(); err != nil {
+		t.Fatalf("forward: %v", err)
+	}
+	if err := page.WaitLoad(); err != nil {
+		t.Fatalf("wait for load after forward: %v", err)
+	}
+	unreachableURL, _, ok := errorPage(page)
+	if !ok {
+		t.Fatal("errorPage after forward = ok false, want the error page reported")
+	}
+	if unreachableURL != refused {
+		t.Errorf("unreachableURL after forward = %q, want %q", unreachableURL, refused)
+	}
+
+	if err := page.Reload(); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if err := page.WaitLoad(); err != nil {
+		t.Fatalf("wait for load after reload: %v", err)
+	}
+	if unreachableURL, _, ok := errorPage(page); !ok || unreachableURL != refused {
+		t.Errorf("errorPage after reload = (%q, _, %v), want (%q, _, true)", unreachableURL, ok, refused)
+	}
+}
+
+// --- errorPageFailure ---
+
+func TestErrorPageFailure(t *testing.T) {
+	const url = "https://example.com/"
+	cases := []struct {
+		name   string
+		reason string
+		want   string
+	}{
+		{"neterror page", "ERR_CONNECTION_REFUSED", "navigation failed: net::ERR_CONNECTION_REFUSED"},
+		{"ssl interstitial keeps one prefix", "net::ERR_CERT_AUTHORITY_INVALID", "navigation failed: net::ERR_CERT_AUTHORITY_INVALID"},
+		{"dns probe result is not a net error", "DNS_PROBE_FINISHED_NXDOMAIN", "navigation failed: DNS_PROBE_FINISHED_NXDOMAIN for " + url},
+		{"no reason names the URL", "", "navigation failed: Chrome shows an error page for " + url},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			msg := navigationFailure(errorPageFailure(url, c.reason), ownSession)
+			if !strings.HasPrefix(msg, c.want) {
+				t.Errorf("navigationFailure(errorPageFailure(%q, %q)) = %q, want it to lead with %q", url, c.reason, msg, c.want)
+			}
+			// The cert hint has to reach the reason path too.
+			wantHint := strings.Contains(c.reason, "ERR_CERT")
+			if got := strings.Contains(msg, "install its CA"); got != wantHint {
+				t.Errorf("navigationFailure(errorPageFailure(%q, %q)) = %q, hinted = %v, want %v", url, c.reason, msg, got, wantHint)
+			}
+		})
+	}
+}
+
 // --- sessionFlagNotes ---
 
 func TestSessionFlagNotes(t *testing.T) {
