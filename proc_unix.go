@@ -40,17 +40,12 @@ func profileLockPID(dataDir string) (int, bool) {
 	return pid, true
 }
 
-// waitPIDGone blocks until pid leaves the process table, up to d. Signal 0 asks
-// without reaping: this process is not roddy's child, so there is nothing to
-// Wait on. A pid that outlives d just returns.
+// waitPIDGone blocks until pid leaves the process table, up to d; a pid that
+// outlives d just returns.
 func waitPIDGone(pid int, d time.Duration) {
 	deadline := time.Now().Add(d)
 	for time.Now().Before(deadline) {
-		proc, err := os.FindProcess(pid)
-		if err != nil {
-			return
-		}
-		if err := proc.Signal(syscall.Signal(0)); err != nil {
+		if !pidAlive(pid) {
 			return
 		}
 		time.Sleep(25 * time.Millisecond)

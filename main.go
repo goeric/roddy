@@ -221,6 +221,18 @@ func signalPID(pid int) {
 	}
 }
 
+// pidAlive reports whether pid is still in the process table. Signal 0 asks
+// without reaping: a PID out of a state file is not this process's child, so
+// there is nothing to Wait on. Windows rejects every signal but Kill, so a pid
+// there always reads as gone.
+func pidAlive(pid int) bool {
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	return proc.Signal(syscall.Signal(0)) == nil
+}
+
 // adjustActivePage keeps the active-page index pointing at the same page after
 // the page at closed is removed from a list of count pages: indexes above the
 // closed page shift down by one, and an index at or past the new end clamps.
@@ -735,11 +747,10 @@ func startAttemptLauncher(base startLaunch, mode singleProcessMode, extensionsFr
 }
 
 const (
-	// retireConnectTimeout bounds retireSession's connect and close: a Chrome
-	// stopped (SIGSTOP) or wedged accepts the TCP connection and never answers
-	// the WebSocket upgrade, hanging start forever with nothing on screen, and
-	// one that answers the handshake then hangs on close is the same hang a
-	// step later.
+	// retireConnectTimeout bounds retireSession's connect and its close: a
+	// wedged or SIGSTOPped Chrome accepts the TCP connection and never answers
+	// the WebSocket upgrade, hanging start silently, and one that answers the
+	// handshake can hang on close instead.
 	retireConnectTimeout = 5 * time.Second
 	// retireExitTimeout bounds the wait for a signalled browser to let go of
 	// the profile the new launch wants. Outliving it fails that launch rather

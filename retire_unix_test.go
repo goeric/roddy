@@ -123,9 +123,7 @@ func TestRetireSession_StopsAnUnresponsiveOwnedChrome(t *testing.T) {
 	l, s := retireFixture(t)
 	s.ChromePID = l.PID()
 	s.DebugURL = deadDebugURL(t)
-	if err := saveState(s); err != nil {
-		t.Fatalf("save state: %v", err)
-	}
+	mustSaveState(t, s)
 	if pid, ok := profileLockPID(s.DataDir); !ok || pid != l.PID() {
 		t.Fatalf("profileLockPID(%q) = %d, %v, want %d, true", s.DataDir, pid, ok, l.PID())
 	}
@@ -137,11 +135,11 @@ func TestRetireSession_StopsAnUnresponsiveOwnedChrome(t *testing.T) {
 	if notes.String() != want {
 		t.Errorf("notes = %q, want %q", notes.String(), want)
 	}
-	if alivePID(l.PID()) {
+	if pidAlive(l.PID()) {
 		t.Errorf("Chrome (PID %d) still running: retireSession returned before it exited", l.PID())
 	}
-	if _, err := os.Stat(statePath()); !os.IsNotExist(err) {
-		t.Errorf("stat state file = %v, want it removed", err)
+	if stateFileExists() {
+		t.Error("state file kept, want it removed")
 	}
 }
 
@@ -165,9 +163,7 @@ func TestRetireSession_LeavesAnUnresponsiveChromeWithoutEvidence(t *testing.T) {
 			}
 			stranger := startSleepChild(t)
 			s := &State{DebugURL: deadDebugURL(t), ChromePID: stranger.pid, DataDir: dataDir}
-			if err := saveState(s); err != nil {
-				t.Fatalf("save state: %v", err)
-			}
+			mustSaveState(t, s)
 
 			var notes bytes.Buffer
 			retireSession(s, &notes)
@@ -180,8 +176,8 @@ func TestRetireSession_LeavesAnUnresponsiveChromeWithoutEvidence(t *testing.T) {
 			if !stranger.alive() {
 				t.Errorf("PID %d was signalled without evidence that it is the browser", stranger.pid)
 			}
-			if _, err := os.Stat(statePath()); err != nil {
-				t.Errorf("stat state file = %v, want the stale session kept for 'roddy stop'", err)
+			if !stateFileExists() {
+				t.Error("state file removed, want the stale session kept for 'roddy stop'")
 			}
 		})
 	}

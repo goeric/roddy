@@ -19,7 +19,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -1924,24 +1923,14 @@ func waitURLs(list func() []string) []string {
 	}
 }
 
-// alivePID reports whether pid is still in the process table. rod's launcher
-// runs its own cmd.Wait, so a Wait here would lose the race and return
-// immediately; signal 0 asks instead of reaping. On Windows Signal fails on
-// the first call, which reads as gone.
-func alivePID(pid int) bool {
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	return proc.Signal(syscall.Signal(0)) == nil
-}
-
-// waitProcessGone blocks until pid is gone, up to ~3s.
+// waitProcessGone blocks until pid is gone, up to ~3s. rod's launcher runs its
+// own cmd.Wait, so a Wait here would lose the race and return immediately;
+// pidAlive's signal 0 asks instead of reaping.
 func waitProcessGone(t testing.TB, pid int) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		if !alivePID(pid) {
+		if !pidAlive(pid) {
 			return
 		}
 		time.Sleep(25 * time.Millisecond)
@@ -2563,12 +2552,26 @@ func retireFixture(t *testing.T) (*launcher.Launcher, *State) {
 	t.Cleanup(func() {
 		b := rod.New().ControlURL(u)
 		closed := b.Connect() == nil && b.Close() == nil
-		if !closed && alivePID(l.PID()) {
+		if !closed && pidAlive(l.PID()) {
 			l.Kill()
 		}
 		waitProcessGone(t, l.PID())
 	})
 	return l, &State{DebugURL: u, DataDir: dataDir}
+}
+
+// mustSaveState records the session retireSession is about to be handed.
+func mustSaveState(t *testing.T, s *State) {
+	t.Helper()
+	if err := saveState(s); err != nil {
+		t.Fatalf("save state: %v", err)
+	}
+}
+
+// stateFileExists reports whether the session state file is still there.
+func stateFileExists() bool {
+	_, err := os.Stat(statePath())
+	return err == nil
 }
 
 // deadDebugURL is a debug socket nothing answers on, for the sessions whose
@@ -2584,15 +2587,13 @@ func deadDebugURL(t *testing.T) string {
 // leave the user with no session at all and that browser still up.
 func TestRetireSession_LeavesAConnectSessionsBrowserRunning(t *testing.T) {
 	_, s := retireFixture(t)
-	if err := saveState(s); err != nil {
-		t.Fatalf("save state: %v", err)
-	}
+	mustSaveState(t, s)
 
 	var notes bytes.Buffer
 	retireSession(s, &notes)
 
-	if _, err := os.Stat(statePath()); err != nil {
-		t.Errorf("stat state file = %v, want it kept until the new start saves", err)
+	if !stateFileExists() {
+		t.Error("state file removed, want it kept until the new start saves")
 	}
 	if want := "note: replacing the connected session at " + debugHost(s.DebugURL); !strings.Contains(notes.String(), want) {
 		t.Errorf("notes = %q, want it to contain %q", notes.String(), want)
@@ -2626,9 +2627,7 @@ func TestRetireSession_LeavesAConnectSessionsBrowserRunning(t *testing.T) {
 func TestRetireSession_ClosesAnOwnedBrowser(t *testing.T) {
 	l, s := retireFixture(t)
 	s.ChromePID = l.PID()
-	if err := saveState(s); err != nil {
-		t.Fatalf("save state: %v", err)
-	}
+	mustSaveState(t, s)
 
 	var notes bytes.Buffer
 	retireSession(s, &notes)
@@ -2642,8 +2641,8 @@ func TestRetireSession_ClosesAnOwnedBrowser(t *testing.T) {
 		_ = browser.Close()
 		t.Error("owned browser still answering after retireSession")
 	}
-	if _, err := os.Stat(statePath()); !os.IsNotExist(err) {
-		t.Errorf("stat state file = %v, want it removed", err)
+	if stateFileExists() {
+		t.Error("state file kept, want it removed")
 	}
 }
 
