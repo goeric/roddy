@@ -373,8 +373,10 @@ lands.
 
 Captures and interactions act on the browser's foreground tab, so `click`,
 `hover`, `focus`, `input`, `clear`, `screenshot` and `screenshot-el` raise the
-tab they touch, as `roddy page <i>` does. Reads (`text`, `html`, `js`, `attr`,
-…) leave the foreground alone. On an older binary that lacks that fix, driving
+tab they touch, as `roddy page <i>` does — `click` only once the selector has
+matched, so a typo does not switch tabs. Reads (`text`, `html`, `js`, `attr`,
+…) leave the foreground alone, and so do `select`, `submit` and `file`, which
+never scroll to the element. On an older binary that lacks these fixes, driving
 or capturing a backgrounded tab hangs — `screenshot failed: context deadline
 exceeded`, or `click` never returning at all — and the workaround is
 `roddy page <i>` on the tab you want, or `closepage` the other one.
@@ -492,6 +494,7 @@ session's state — leave it for next time unless the user wants it gone.
   | `--extension` / `roddy extensions` | [#52](https://github.com/simonw/rodney/pull/52) |
   | stops the browser aborting mid-session | [#54](https://github.com/simonw/rodney/pull/54) |
   | screenshot of a non-foreground tab | [#55](https://github.com/simonw/rodney/pull/55) |
+  | click/hover/input on a non-foreground tab | [#29](https://github.com/goeric/roddy/pull/29) (fork-only) |
 
   If a machine still has the older `rodney` command, prefer `roddy`. The two keep
   separate state (`.rodney/` vs `.roddy/`), so mixing them creates a second,
@@ -500,4 +503,6 @@ session's state — leave it for next time unless the user wants it gone.
   Symptoms that `roddy` is actually an older build missing these fixes:
   `--extension` reports "unknown flag" (#52 missing); the browser dies mid-session
   with `failed to connect to browser (is it still running?)` (#54 missing);
-  `screenshot failed: context deadline exceeded` with two tabs open (#55 missing).
+  `screenshot failed: context deadline exceeded` with two tabs open (#55 missing);
+  `click`, `hover` or `input` never returning at all with two tabs open (#29
+  missing).

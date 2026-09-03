@@ -40,27 +40,36 @@ rod v0.116.2:
 - `Page.Eval` CALLS a function literal; raw `Runtime.evaluate` does not — wrap
   expressions in an IIFE `(() => { return (expr); })()` or `{a: 1}` parses as a
   labelled block.
-- `Page.Timeout` clones the page but `p.root` keeps the ORIGINAL context, and
-  `WaitRepaint` evaluates on `p.root` — so a page deadline never reaches it.
-  On a backgrounded target requestAnimationFrame never fires, so
-  `Hover`/`Click`/`Focus`/`Input` (all of them reach `ScrollIntoView` →
-  `WaitStableRAF` → `WaitRepaint`) hang FOREVER, not for defaultTimeout:
-  measured >45s under a 30s page timeout (spike), and rod's `Element.Screenshot`
-  the same way. `Page.Activate` first cures it (0.13s). A deadline that does
-  fire has to be on the BROWSER — `browser.Timeout(d)` before `Connect`, so
-  pages built by `PageFromTarget` inherit it as their root ctx: the same click
-  then fails with "context deadline exceeded" at 5.011s under `ROD_TIMEOUT=5`
-  (spike). Both are shipped; the browser deadline is the backstop for a target
-  that cannot be raised. Do NOT expect a `Timeout` clone of an already-used
-  Browser to bound anything: `Pages()`/`PageFromTarget` return pages cached in
-  the shared `states` map with their original ctx.
-  Not on the rAF path, measured on a hidden target (spike): `Page.WaitStable`
-  (1.01s) and `Element.WaitVisible` (0.02s) return normally, so `waitstable`
-  and `wait <sel>` keep plain `withPage`. Everything else that mutates an
-  element IS on it — `Select`, `Type`, `KeyActions`, `SelectText`, `Input` and
-  `SelectAllText` all start with `Focus`; `SetFiles` is the one exception.
-  roddy's `select` and `submit` escape it only because they set the value by
-  eval rather than through rod's element API.
+- `Page.Timeout`/`Context` clone the Page but never re-point `p.root`, and
+  `WaitRepaint` evals its requestAnimationFrame promise on `p.root` — a page
+  deadline never reaches it (`Mouse`/`Keyboard` dispatch on the root page too,
+  and `Page.Info` dispatches on `p.browser`). A backgrounded target never fires
+  rAF: `Element.Click` (`Hover` → `WaitInteractable` → `ScrollIntoView` →
+  `WaitStableRAF` → `WaitRepaint`) ran >45s under a 30s page timeout;
+  `Page.Activate` first cures it (spike). The deadline that fires is the
+  BROWSER's — `Timeout(d)` on the Browser that builds the pages (roddy: before
+  `Connect`), since `PageFromTarget` derives each root ctx from `b.ctx`:
+  `click failed: context deadline exceeded` at 5.011s under `ROD_TIMEOUT=5`
+  (spike). A `Timeout` clone of a Browser that already built the page bounds
+  nothing on it: `PageFromTarget` (so `Pages()`) returns the `*Page` cached in
+  the shared `states` map, original ctx and all. On the rAF path (source):
+  everything starting with `Focus` (`Input`, `InputTime`, `InputColor`, `Type`,
+  `KeyActions`, `Select`, `SelectText`, `SelectAllText`) or `ScrollIntoView`
+  (`Tap`, `Element.Screenshot`), and `Hover` via `WaitInteractable`. Not on it:
+  `SetFiles`, `Blur`, `Remove`, and, measured on a hidden target,
+  `Page.WaitStable` (1.01s) and `Element.WaitVisible` (0.02s) (suite).
+- `Browser.Pages()` → `PageFromTarget` runs `page.Emulate(defaultDevice)` on
+  every page it builds, and the renderer answers that — so ONE tab stuck in a
+  pending navigation blocks `Pages()`, and with it every command, until that
+  tab commits or its server goes away (spike). `Browser.close` still works.
+- `document.visibilityState` is NOT a test for "will this target paint".
+  Measured on a raised tab still reading "hidden": a click reached its handler
+  and a full-page screenshot returned, both in about a second (suite). Ask for
+  the frame instead — `new Promise(r => requestAnimationFrame(r))` on a Page
+  clone with its own deadline (that one IS bounded; only WaitRepaint's p.root
+  eval is not). A tab in front answers in 4-6ms, one whose compositor had to
+  resume takes ~1s for its first frame and 4-8ms after, and one that will not
+  paint never answers (suite).
 - `launcher.New()` turns Site Isolation off with `--disable-site-isolation-trials`.
   It also lists `site-per-process` in `disable-features`, which is INERT on the
   pinned Chromium 128 (the feature is spelled `SitePerProcess`; measured in both

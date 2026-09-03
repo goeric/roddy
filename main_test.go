@@ -79,8 +79,11 @@ func TestMain(m *testing.M) {
 
 	code := m.Run()
 
-	server.Close()
+	// Browser first: httptest's Close waits for handlers still running, and a
+	// fixture that answers only when its client goes away (handleStall) would
+	// otherwise pin teardown until its own timer fires.
 	browser.MustClose()
+	server.Close()
 	os.Exit(code)
 }
 
@@ -197,7 +200,8 @@ func handleOnloadNavigate(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleNeverLoads serves a document that commits but never fires
-// window.onload: the image it pulls in is answered by handleStall.
+// window.onload: the image it pulls in goes to handleStall, which never
+// answers.
 func handleNeverLoads(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html")
 	w.Write([]byte(`<!DOCTYPE html>
@@ -207,10 +211,17 @@ func handleNeverLoads(w http.ResponseWriter, r *http.Request) {
 </html>`))
 }
 
-// handleStall never answers. It returns once the client goes away, or
-// httptest's Close would block on it for the rest of the run.
+// handleStall never answers. It gives up when the client goes away and, in
+// case nothing ever closes that request, on its own timer: httptest's Close
+// waits for handlers still running, so a fixture must never be able to pin
+// teardown.
 func handleStall(w http.ResponseWriter, r *http.Request) {
-	<-r.Context().Done()
+	t := time.NewTimer(30 * time.Second)
+	defer t.Stop()
+	select {
+	case <-r.Context().Done():
+	case <-t.C:
+	}
 }
 
 func handlePageSW(w http.ResponseWriter, r *http.Request) {
