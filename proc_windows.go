@@ -18,6 +18,13 @@ func profileLockPID(dataDir string) (int, bool) {
 	return 0, false
 }
 
+// proxyPIDAlive has no signal 0 to ask with on Windows (pidAlive reads every
+// PID there as gone), so the port answering is the only evidence status has:
+// claiming the PID is alive keeps it to that one fact.
+func proxyPIDAlive(pid int) bool {
+	return true
+}
+
 // waitPIDGone is only reached behind profileLockPID's evidence, which this
 // platform never has.
 func waitPIDGone(pid int, d time.Duration) {}

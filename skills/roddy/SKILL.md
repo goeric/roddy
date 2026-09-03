@@ -65,8 +65,8 @@ roddy start --no-single-process  # keep Chrome multi-process for crash isolation
                                  # only, no extensions, not macOS); such sessions say "single process" in
                                  # start output and status
 roddy connect <host:port>        # attach to a Chrome already listening on a debug port
-roddy status             # which pages? (but see the exit-code trap under Checks); shows the auth
-                         # proxy's state — "Auth proxy: running/NOT running" — when one is in use
+roddy status             # which pages? (but see the exit-code trap under Checks); a proxied
+                         # session also gets "Auth proxy: running" or "Auth proxy: NOT running"
 roddy stop               # shut it down
 ```
 
@@ -128,6 +128,7 @@ screen turned off. Consequences:
 Verify which mode you actually got:
 
 ```bash
+# line 1 only: a proxied session's "Auth proxy:" line carries a second PID
 ps -ww -o command= -p "$(roddy status | sed -n '1s/.*PID \([0-9]*\).*/\1/p')" \
   | tr ' ' '\n' | grep -- --headless      # "--headless=new" when an extension is loaded
 ```

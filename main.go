@@ -830,12 +830,12 @@ const (
 //
 // On retireUnresponsive's no-evidence path the kept state still names the
 // proxy helper signalled here; that state is stale by definition, and stop
-// signals a dead PID happily.
+// guards on the same port, so it reports that helper already gone.
 func retireSession(s *State, w io.Writer) {
-	// Quietly, as stop does. An old helper still holds a descriptor on
-	// proxy.log, which the new start truncates, and its later writes would
-	// punch holes in the log that start reports from: SIGTERM first, and it
-	// normally exits before the truncate.
+	// Quietly, unlike stop: start's notes are about the browser. An old helper
+	// still holds a descriptor on proxy.log, which the new start truncates, and
+	// its later writes would punch holes in the log that start reports from:
+	// SIGTERM first, and it normally exits before the truncate.
 	if proxyHelperAlive(s.ProxyPort) {
 		signalPID(s.ProxyPID)
 	}
@@ -1148,6 +1148,22 @@ func cmdConnect(args []string) {
 	fmt.Printf("Debug URL: %s\n", info.WebSocketDebuggerURL)
 }
 
+// stopRecordedProxy signals the helper a state file names, guarded as
+// retireSession's is: the recorded PID is that helper's only while the recorded
+// port still answers — across a reboot it is whatever the system handed out
+// next. Which of the two happened goes to w; an unproxied session says nothing.
+func stopRecordedProxy(s *State, w io.Writer) {
+	if s.ProxyPID <= 0 {
+		return
+	}
+	if !proxyHelperAlive(s.ProxyPort) {
+		fmt.Fprintf(w, "proxy helper already gone (PID %d)\n", s.ProxyPID)
+		return
+	}
+	fmt.Fprintf(w, "stopping proxy helper (PID %d)\n", s.ProxyPID)
+	signalPID(s.ProxyPID)
+}
+
 func cmdStop(args []string) {
 	s, err := loadState()
 	if err != nil {
@@ -1166,8 +1182,7 @@ func cmdStop(args []string) {
 		}
 	}
 	// If ChromePID==0 we connected to an external browser; just clear state without closing it
-	// Also kill the proxy helper if running
-	signalPID(s.ProxyPID)
+	stopRecordedProxy(s, os.Stderr)
 	removeState()
 	fmt.Println("Chrome stopped")
 }
@@ -1186,14 +1201,29 @@ func statusCurrent(title, url, unreachableURL, reason string) string {
 	return fmt.Sprintf("Chrome error page for %s (%s)", unreachableURL, reason)
 }
 
-// statusProxy formats status's auth-proxy line. A helper that died after start
-// leaves no symptom but Chrome's ERR_TUNNEL_CONNECTION_FAILED on every
-// navigation, so status names its state and where its log is.
-func statusProxy(s *State, alive bool) string {
-	if alive {
+// statusProxy formats status's auth-proxy line from the two pieces of evidence
+// status can gather: the recorded port answering and the recorded PID being
+// alive. Empty for an unproxied session.
+func statusProxy(s *State, portAlive, pidAlive bool) string {
+	switch {
+	case s.ProxyPort <= 0:
+		return ""
+	case portAlive && pidAlive:
 		return fmt.Sprintf("Auth proxy: running (PID %d, port %d)", s.ProxyPID, s.ProxyPort)
+	case portAlive:
+		return fmt.Sprintf("Auth proxy: port %d answers but PID %d is gone — another process owns it; roddy start replaces the helper", s.ProxyPort, s.ProxyPID)
+	default:
+		return fmt.Sprintf("Auth proxy: NOT running (PID %d recorded; its last output, if any, is in %s)", s.ProxyPID, proxyLogPath())
 	}
-	return fmt.Sprintf("Auth proxy: NOT running (PID %d recorded; see %s)", s.ProxyPID, proxyLogPath())
+}
+
+// printStatusProxy reports the helper on both of status's exits: one orphaned
+// by a Chrome that stopped answering is still listening, and still the user's
+// to clean up.
+func printStatusProxy(s *State, w io.Writer) {
+	if line := statusProxy(s, proxyHelperAlive(s.ProxyPort), proxyPIDAlive(s.ProxyPID)); line != "" {
+		fmt.Fprintln(w, line)
+	}
 }
 
 func cmdStatus(args []string) {
@@ -1205,6 +1235,7 @@ func cmdStatus(args []string) {
 	browser, err := connectBrowser(s)
 	if err != nil {
 		fmt.Printf("Browser not responding (PID %d, state may be stale)\n", s.ChromePID)
+		printStatusProxy(s, os.Stdout)
 		return
 	}
 	pages, _ := browser.Pages()
@@ -1215,9 +1246,7 @@ func cmdStatus(args []string) {
 	if notes := sessionFlagNotes(s); notes != "" {
 		fmt.Printf("Session: %s\n", notes)
 	}
-	if s.ProxyPort > 0 {
-		fmt.Println(statusProxy(s, proxyHelperAlive(s.ProxyPort)))
-	}
+	printStatusProxy(s, os.Stdout)
 	for _, ext := range s.Extensions {
 		fmt.Printf("Extension: %s (%s)\n", ext.Name, ext.ID)
 	}
@@ -1286,16 +1315,20 @@ func navigationFailure(err error, s *State) string {
 			msg += "; for a self-signed or TLS-inspecting-proxy certificate, install its CA for Chrome or restart with `roddy start --insecure`"
 		}
 	}
-	// Keyed on the port, not the PID: cmdStart saves both or neither (it
-	// fatals before saveState if the helper never announces a port), and the
-	// port is what liveness needs. A helper that is gone gets the opposite
-	// advice from one that is running but cannot reach upstream.
+	// ProxyPort, not ProxyPID: cmdStart saves both or neither (it fatals before
+	// saveState if the helper never announces a port), and the port is what
+	// proxyHelperAlive dials. Same evidence as status, for the same reason: a
+	// port that answers for a PID that is gone belongs to another process, and
+	// the helper's log will never explain anything again.
 	if s.ProxyPort > 0 && (strings.Contains(msg, "ERR_TUNNEL_CONNECTION_FAILED") ||
 		strings.Contains(msg, "ERR_PROXY_CONNECTION_FAILED")) {
-		if proxyHelperAlive(s.ProxyPort) {
+		switch {
+		case !proxyHelperAlive(s.ProxyPort):
+			msg += "; the proxy helper is no longer running — its last output, if any, is in " + proxyLogPath() + "; roddy start replaces it"
+		case proxyPIDAlive(s.ProxyPID):
 			msg += "; the proxy helper could not reach the upstream proxy — see " + proxyLogPath()
-		} else {
-			msg += "; the proxy helper is no longer running — see " + proxyLogPath() + ", then roddy stop and roddy start"
+		default:
+			msg += fmt.Sprintf("; the proxy helper is gone and port %d now belongs to another process; roddy start replaces it", s.ProxyPort)
 		}
 	}
 	return msg

@@ -53,7 +53,7 @@ func (c *sleepChild) waitExit(t *testing.T, d time.Duration) error {
 	case <-c.exited:
 		return c.err
 	case <-time.After(d):
-		t.Fatalf("PID %d still running %v after retireSession", c.pid, d)
+		t.Fatalf("PID %d still running %v after it was signalled", c.pid, d)
 		return nil
 	}
 }
