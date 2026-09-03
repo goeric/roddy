@@ -69,6 +69,8 @@ func TestMain(m *testing.M) {
 	mux.HandleFunc("/logs-page", handleLogsPage)
 	mux.HandleFunc("/isolation", handleIsolationParent)
 	mux.HandleFunc("/isolation/child", handleIsolationChild)
+	mux.HandleFunc("/never-loads", handleNeverLoads)
+	mux.HandleFunc("/stall", handleStall)
 	// The "/" handler answers every unregistered path, so a 404 has to be one.
 	mux.HandleFunc("/missing-resource", http.NotFound)
 	server := httptest.NewServer(mux)
@@ -192,6 +194,23 @@ func handleOnloadNavigate(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, `<!DOCTYPE html><html><head><title>Onload Navigate</title></head>
 <body><script>addEventListener("load", () => { location.href = %q; });</script></body></html>`,
 		r.URL.Query().Get("to"))
+}
+
+// handleNeverLoads serves a document that commits but never fires
+// window.onload: the image it pulls in is answered by handleStall.
+func handleNeverLoads(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html")
+	w.Write([]byte(`<!DOCTYPE html>
+<html lang="en">
+<head><title>Never Loads</title></head>
+<body><h1>Never Loads</h1><img src="/stall"></body>
+</html>`))
+}
+
+// handleStall never answers. It returns once the client goes away, or
+// httptest's Close would block on it for the rest of the run.
+func handleStall(w http.ResponseWriter, r *http.Request) {
+	<-r.Context().Done()
 }
 
 func handlePageSW(w http.ResponseWriter, r *http.Request) {

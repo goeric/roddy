@@ -371,10 +371,13 @@ directory** (then `screenshot-2.png`, `screenshot-3.png`, …) and prints the
 path — it does not write to stdout. Pass an explicit path when you care where it
 lands.
 
-Captures act on the browser's foreground tab. `roddy page <i>` raises the tab
-it selects, so switching then capturing works. On an older binary that lacks
-that fix, capturing a backgrounded tab hangs and fails with `screenshot failed:
-context deadline exceeded` — the workaround is to `closepage` the other tab.
+Captures and interactions act on the browser's foreground tab, so `click`,
+`hover`, `focus`, `input`, `clear`, `screenshot` and `screenshot-el` raise the
+tab they touch, as `roddy page <i>` does. Reads (`text`, `html`, `js`, `attr`,
+…) leave the foreground alone. On an older binary that lacks that fix, driving
+or capturing a backgrounded tab hangs — `screenshot failed: context deadline
+exceeded`, or `click` never returning at all — and the workaround is
+`roddy page <i>` on the tab you want, or `closepage` the other one.
 
 Run `roddy --help` for the complete, authoritative list if you need something
 not shown here.

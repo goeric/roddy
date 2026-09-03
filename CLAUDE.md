@@ -40,6 +40,27 @@ rod v0.116.2:
 - `Page.Eval` CALLS a function literal; raw `Runtime.evaluate` does not — wrap
   expressions in an IIFE `(() => { return (expr); })()` or `{a: 1}` parses as a
   labelled block.
+- `Page.Timeout` clones the page but `p.root` keeps the ORIGINAL context, and
+  `WaitRepaint` evaluates on `p.root` — so a page deadline never reaches it.
+  On a backgrounded target requestAnimationFrame never fires, so
+  `Hover`/`Click`/`Focus`/`Input` (all of them reach `ScrollIntoView` →
+  `WaitStableRAF` → `WaitRepaint`) hang FOREVER, not for defaultTimeout:
+  measured >45s under a 30s page timeout (spike), and rod's `Element.Screenshot`
+  the same way. `Page.Activate` first cures it (0.13s). A deadline that does
+  fire has to be on the BROWSER — `browser.Timeout(d)` before `Connect`, so
+  pages built by `PageFromTarget` inherit it as their root ctx: the same click
+  then fails with "context deadline exceeded" at 5.011s under `ROD_TIMEOUT=5`
+  (spike). Both are shipped; the browser deadline is the backstop for a target
+  that cannot be raised. Do NOT expect a `Timeout` clone of an already-used
+  Browser to bound anything: `Pages()`/`PageFromTarget` return pages cached in
+  the shared `states` map with their original ctx.
+  Not on the rAF path, measured on a hidden target (spike): `Page.WaitStable`
+  (1.01s) and `Element.WaitVisible` (0.02s) return normally, so `waitstable`
+  and `wait <sel>` keep plain `withPage`. Everything else that mutates an
+  element IS on it — `Select`, `Type`, `KeyActions`, `SelectText`, `Input` and
+  `SelectAllText` all start with `Focus`; `SetFiles` is the one exception.
+  roddy's `select` and `submit` escape it only because they set the value by
+  eval rather than through rod's element API.
 - `launcher.New()` turns Site Isolation off with `--disable-site-isolation-trials`.
   It also lists `site-per-process` in `disable-features`, which is INERT on the
   pinned Chromium 128 (the feature is spelled `SitePerProcess`; measured in both

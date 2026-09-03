@@ -15,7 +15,7 @@ This fork exists to keep those fixes available and installable. It is not a host
 
 - **`--extension` flag** — load unpacked extension directories or packed `.crx`/`.zip` archives into a headless session, and list them with `roddy extensions`. ([upstream PR #52](https://github.com/simonw/rodney/pull/52))
 - **Browser-process crash fixes** — stops Chromium running in-development features that abort the browser, and reserves `--single-process` for unsandboxed launches (containers, gVisor), never using it on macOS where it aborts the browser as soon as a page touches `navigator.mediaDevices`. ([upstream PR #54](https://github.com/simonw/rodney/pull/54))
-- **Screenshot reliability** — raises the target before capturing, fixing captures that timed out when the page was not in the foreground. ([upstream PR #55](https://github.com/simonw/rodney/pull/55))
+- **Screenshot and interaction reliability** — raises the target before capturing or driving it, fixing captures that timed out and clicks that hung forever when the page was not in the foreground. ([upstream PR #55](https://github.com/simonw/rodney/pull/55))
 
 ### Migrating from Rodney
 

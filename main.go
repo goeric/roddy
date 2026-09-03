@@ -512,12 +512,18 @@ func init() {
 
 // withPage loads state, connects, and returns the active page.
 // Caller should NOT close the browser (we just disconnect).
+//
+// The deadline goes on the browser as well as the page because rod's
+// Page.Timeout only clones the page: p.root keeps the browser's context, and
+// WaitRepaint evaluates on p.root. A page deadline never reaches it, a browser
+// deadline does. Each roddy command is one connect and one operation, so the
+// two amount to the same budget.
 func withPage() (*State, *rod.Browser, *rod.Page) {
 	s, err := loadState()
 	if err != nil {
 		fatal("%v", err)
 	}
-	browser, err := connectBrowser(s)
+	browser, err := connectBrowserTimeout(s, defaultTimeout)
 	if err != nil {
 		fatal("%v", err)
 	}
@@ -530,23 +536,39 @@ func withPage() (*State, *rod.Browser, *rod.Page) {
 	return s, browser, page
 }
 
+// withForegroundPage is withPage for the commands that drive the page rather
+// than read it: everything reaching rod's Element.ScrollIntoView, which every
+// interaction (click, hover, focus, input, element capture) goes through.
+//
+// Read-only commands must keep withPage: raising a target is visible in --show
+// mode, and "roddy text" has no business switching which tab the user sees.
+func withForegroundPage() (*State, *rod.Browser, *rod.Page) {
+	s, browser, page := withPage()
+	bringToFront(page)
+	return s, browser, page
+}
+
 // bringToFront makes page the browser's foreground target.
 //
 // roddy's "active page" is only an index in its own state file; the browser is
 // never told about it, so after "roddy page N" the foreground target is still
 // whichever one was opened last. DOM and JS commands do not care -- they read a
-// hidden target perfectly well -- but a backgrounded target has no compositor
-// producing frames, and Page.captureScreenshot simply waits for one that never
-// arrives until the context deadline expires:
+// hidden target perfectly well -- but a backgrounded target neither composites
+// frames nor runs requestAnimationFrame, and two rod waits sit on those:
 //
-//	error: screenshot failed: context deadline exceeded
+//   - Page.captureScreenshot waits for a frame that never arrives, until the
+//     context deadline expires: "screenshot failed: context deadline exceeded".
+//   - ScrollIntoView -> WaitStableRAF -> Page.WaitRepaint awaits an animation
+//     frame that never comes, and evaluates it on p.root, which no page-level
+//     deadline reaches -- so click, hover, focus and input hang outright.
 //
-// So every command that captures pixels has to raise its target first.
+// So every command that captures pixels or drives the page has to raise its
+// target first.
 //
 // Errors are deliberately ignored. Activation failing means the target or the
-// browser is gone, in which case the capture that follows reports the real
+// browser is gone, in which case the work that follows reports the real
 // problem; turning that into an error here would only replace a good message
-// with a worse one, and would risk failing captures that would have worked.
+// with a worse one, and would risk failing commands that would have worked.
 func bringToFront(page *rod.Page) {
 	_, _ = page.Activate()
 }
@@ -1370,7 +1392,9 @@ func cmdOpen(args []string) {
 			fatal("%s", navigationFailure(err, s))
 		}
 	}
-	waitLoaded(page, s)
+	// Neither page came through withPage, so neither carries a deadline of its
+	// own: the load wait and the error-page check would run unbounded.
+	waitLoaded(page.Timeout(defaultTimeout), s)
 	info, _ := page.Info()
 	if info != nil {
 		fmt.Println(info.Title)
@@ -1576,7 +1600,7 @@ func cmdClick(args []string) {
 	if len(args) < 1 {
 		fatal("usage: roddy click <selector>")
 	}
-	_, _, page := withPage()
+	_, _, page := withForegroundPage()
 	el, err := page.Element(args[0])
 	if err != nil {
 		fatal("element not found: %v", err)
@@ -1593,7 +1617,7 @@ func cmdInput(args []string) {
 	if len(args) < 2 {
 		fatal("usage: roddy input <selector> <text>")
 	}
-	_, _, page := withPage()
+	_, _, page := withForegroundPage()
 	el, err := page.Element(args[0])
 	if err != nil {
 		fatal("element not found: %v", err)
@@ -1607,7 +1631,7 @@ func cmdClear(args []string) {
 	if len(args) < 1 {
 		fatal("usage: roddy clear <selector>")
 	}
-	_, _, page := withPage()
+	_, _, page := withForegroundPage()
 	el, err := page.Element(args[0])
 	if err != nil {
 		fatal("element not found: %v", err)
@@ -1855,7 +1879,7 @@ func cmdHover(args []string) {
 	if len(args) < 1 {
 		fatal("usage: roddy hover <selector>")
 	}
-	_, _, page := withPage()
+	_, _, page := withForegroundPage()
 	el, err := page.Element(args[0])
 	if err != nil {
 		fatal("element not found: %v", err)
@@ -1870,7 +1894,7 @@ func cmdFocus(args []string) {
 	if len(args) < 1 {
 		fatal("usage: roddy focus <selector>")
 	}
-	_, _, page := withPage()
+	_, _, page := withForegroundPage()
 	el, err := page.Element(args[0])
 	if err != nil {
 		fatal("element not found: %v", err)
@@ -1970,8 +1994,7 @@ func cmdScreenshot(args []string) {
 		file = nextAvailableFile("screenshot", ".png")
 	}
 
-	_, _, page := withPage()
-	bringToFront(page)
+	_, _, page := withForegroundPage()
 
 	// Set viewport size
 	viewportHeight := *height
@@ -2005,8 +2028,7 @@ func cmdScreenshotEl(args []string) {
 	if len(args) > 1 {
 		file = args[1]
 	}
-	_, _, page := withPage()
-	bringToFront(page)
+	_, _, page := withForegroundPage()
 	el, err := page.Element(args[0])
 	if err != nil {
 		fatal("element not found: %v", err)
@@ -2105,7 +2127,9 @@ func cmdNewPage(args []string) {
 		fatal("%s", navigationFailure(err, s))
 	}
 	if url != "" {
-		waitLoaded(page, s)
+		// Same as open: browser.Page's page inherits the browser's context,
+		// which connectBrowser leaves without a deadline.
+		waitLoaded(page.Timeout(defaultTimeout), s)
 	}
 
 	// Switch active to the new page
