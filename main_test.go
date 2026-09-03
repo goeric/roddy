@@ -2759,10 +2759,10 @@ func TestNavigationFailure_RodErrorKeepsOnePrefix(t *testing.T) {
 
 // --- errorPage ---
 
-// errorPageFixture returns a page of the shared browser parked on the good
-// fixture, plus a URL nothing listens on. A closed listener's port is refused
-// straight away, so no test here waits on a DNS probe unless it means to.
-func errorPageFixture(t *testing.T) (*rod.Page, string) {
+// refusedURL returns a URL nothing listens on. A closed listener's port is
+// refused straight away, so no test here waits on a DNS probe unless it means
+// to.
+func refusedURL(t *testing.T) string {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -2772,52 +2772,17 @@ func errorPageFixture(t *testing.T) (*rod.Page, string) {
 	if err := ln.Close(); err != nil {
 		t.Fatalf("close listener: %v", err)
 	}
-	return navigateTo(t, "/"), refused
+	return refused
 }
 
-func TestErrorPage_GoodPageIsNotOne(t *testing.T) {
-	page, _ := errorPageFixture(t)
-	unreachableURL, reason, ok, err := errorPage(page)
-	if err != nil {
-		t.Fatalf("errorPage: %v", err)
-	}
-	if ok {
-		t.Errorf("errorPage on the fixture = (%q, %q, true), want ok false", unreachableURL, reason)
-	}
-}
-
-// The reason Chrome renders for a refused connection is the net error name,
-// unprefixed.
-func TestErrorPage_ConnectionRefused(t *testing.T) {
-	page, refused := errorPageFixture(t)
-	// Navigate reports the failure itself; the error page still commits.
-	_ = page.Navigate(refused)
-	if err := page.WaitLoad(); err != nil {
-		t.Fatalf("wait for load: %v", err)
-	}
-	unreachableURL, reason, ok, err := errorPage(page)
-	if err != nil {
-		t.Fatalf("errorPage: %v", err)
-	}
-	if !ok {
-		t.Fatal("errorPage = ok false, want the committed error page reported")
-	}
-	if unreachableURL != refused {
-		t.Errorf("unreachableURL = %q, want %q", unreachableURL, refused)
-	}
-	if reason != "ERR_CONNECTION_REFUSED" {
-		t.Errorf("reason = %q, want %q", reason, "ERR_CONNECTION_REFUSED")
-	}
-}
-
-// A DNS failure is the one case Chrome does not render a net error for: the
-// neterror page shows the DNS probe's own result ("DNS_PROBE_STARTED" until
-// the probe finishes, then "DNS_PROBE_FINISHED_NXDOMAIN"), never
-// "ERR_NAME_NOT_RESOLVED". TestMain's host-resolver-rules keep .invalid off a
-// hijacking resolver, which would answer instead of failing.
-func TestErrorPage_UnreachableHost(t *testing.T) {
-	page, _ := errorPageFixture(t)
-	const target = "http://does-not-exist.invalid/"
+// errorPageReason takes a page of the shared browser from the good fixture to
+// a URL Chrome cannot load, checks errorPage reports the committed error page
+// against that URL, and returns the reason it read off the page. Navigate's
+// own error is ignored: the error page commits either way, and it is the
+// error page that is under test.
+func errorPageReason(t *testing.T, target string) string {
+	t.Helper()
+	page := navigateTo(t, "/")
 	_ = page.Navigate(target)
 	if err := page.WaitLoad(); err != nil {
 		t.Fatalf("wait for load: %v", err)
@@ -2832,7 +2797,34 @@ func TestErrorPage_UnreachableHost(t *testing.T) {
 	if unreachableURL != target {
 		t.Errorf("unreachableURL = %q, want %q", unreachableURL, target)
 	}
-	if !strings.HasPrefix(reason, "DNS_PROBE_") {
+	return reason
+}
+
+func TestErrorPage_GoodPageIsNotOne(t *testing.T) {
+	unreachableURL, reason, ok, err := errorPage(navigateTo(t, "/"))
+	if err != nil {
+		t.Fatalf("errorPage: %v", err)
+	}
+	if ok {
+		t.Errorf("errorPage on the fixture = (%q, %q, true), want ok false", unreachableURL, reason)
+	}
+}
+
+// The reason Chrome renders for a refused connection is the net error name,
+// unprefixed.
+func TestErrorPage_ConnectionRefused(t *testing.T) {
+	if reason := errorPageReason(t, refusedURL(t)); reason != "ERR_CONNECTION_REFUSED" {
+		t.Errorf("reason = %q, want %q", reason, "ERR_CONNECTION_REFUSED")
+	}
+}
+
+// A DNS failure is the one case Chrome does not render a net error for: the
+// neterror page shows the DNS probe's own result ("DNS_PROBE_STARTED" until
+// the probe finishes, then "DNS_PROBE_FINISHED_NXDOMAIN"), never
+// "ERR_NAME_NOT_RESOLVED". TestMain's host-resolver-rules keep .invalid off a
+// hijacking resolver, which would answer instead of failing.
+func TestErrorPage_UnreachableHost(t *testing.T) {
+	if reason := errorPageReason(t, "http://does-not-exist.invalid/"); !strings.HasPrefix(reason, "DNS_PROBE_") {
 		t.Errorf("reason = %q, want the DNS probe result", reason)
 	}
 }
@@ -2849,74 +2841,48 @@ func TestErrorPage_SelfSignedCert(t *testing.T) {
 	httpsServer.StartTLS()
 	defer httpsServer.Close()
 
-	page, _ := errorPageFixture(t)
-	_ = page.Navigate(httpsServer.URL + "/")
-	if err := page.WaitLoad(); err != nil {
-		t.Fatalf("wait for load: %v", err)
-	}
-	unreachableURL, reason, ok, err := errorPage(page)
-	if err != nil {
-		t.Fatalf("errorPage: %v", err)
-	}
-	if !ok {
-		t.Fatal("errorPage = ok false, want the SSL interstitial reported")
-	}
-	if unreachableURL != httpsServer.URL+"/" {
-		t.Errorf("unreachableURL = %q, want %q", unreachableURL, httpsServer.URL+"/")
-	}
 	// The interstitial renders the reason already prefixed.
-	if reason != "net::ERR_CERT_AUTHORITY_INVALID" {
-		t.Errorf("reason = %q, want %q", reason, "net::ERR_CERT_AUTHORITY_INVALID")
+	const want = "net::ERR_CERT_AUTHORITY_INVALID"
+	if reason := errorPageReason(t, httpsServer.URL+"/"); reason != want {
+		t.Errorf("reason = %q, want %q", reason, want)
 	}
 }
 
 // back, forward and reload return no errorText of their own — the frame tree
 // is the only signal that they landed on an error page. This is issue #18.
 func TestErrorPage_HistoryAndReload(t *testing.T) {
-	page, refused := errorPageFixture(t)
-	_ = page.Navigate(refused)
-	if err := page.WaitLoad(); err != nil {
-		t.Fatalf("wait for load: %v", err)
+	page := navigateTo(t, "/")
+	refused := refusedURL(t)
+	// Each step runs on what the one before it left behind: this table is a
+	// sequence, not a set of independent cases.
+	steps := []struct {
+		name    string
+		do      func() error
+		wantURL string // empty where the step lands back on the good fixture
+	}{
+		// Navigate reports the failure itself; the error page still commits.
+		{"navigate", func() error { _ = page.Navigate(refused); return nil }, refused},
+		{"back", page.NavigateBack, ""},
+		{"forward", page.NavigateForward, refused},
+		{"reload", page.Reload, refused},
 	}
-	if _, _, ok, err := errorPage(page); err != nil || !ok {
-		t.Fatalf("errorPage after Navigate = (ok %v, err %v), want the error page reported", ok, err)
-	}
-
-	if err := page.NavigateBack(); err != nil {
-		t.Fatalf("back: %v", err)
-	}
-	if err := page.WaitLoad(); err != nil {
-		t.Fatalf("wait for load after back: %v", err)
-	}
-	if unreachableURL, reason, ok, err := errorPage(page); err != nil || ok {
-		t.Errorf("errorPage after back = (%q, %q, %v, %v), want the good page reported as fine", unreachableURL, reason, ok, err)
-	}
-
-	if err := page.NavigateForward(); err != nil {
-		t.Fatalf("forward: %v", err)
-	}
-	if err := page.WaitLoad(); err != nil {
-		t.Fatalf("wait for load after forward: %v", err)
-	}
-	unreachableURL, _, ok, err := errorPage(page)
-	if err != nil {
-		t.Fatalf("errorPage after forward: %v", err)
-	}
-	if !ok {
-		t.Fatal("errorPage after forward = ok false, want the error page reported")
-	}
-	if unreachableURL != refused {
-		t.Errorf("unreachableURL after forward = %q, want %q", unreachableURL, refused)
-	}
-
-	if err := page.Reload(); err != nil {
-		t.Fatalf("reload: %v", err)
-	}
-	if err := page.WaitLoad(); err != nil {
-		t.Fatalf("wait for load after reload: %v", err)
-	}
-	if unreachableURL, _, ok, err := errorPage(page); err != nil || !ok || unreachableURL != refused {
-		t.Errorf("errorPage after reload = (%q, _, %v, %v), want (%q, _, true, <nil>)", unreachableURL, ok, err, refused)
+	for _, step := range steps {
+		if err := step.do(); err != nil {
+			t.Fatalf("%s: %v", step.name, err)
+		}
+		if err := page.WaitLoad(); err != nil {
+			t.Fatalf("wait for load after %s: %v", step.name, err)
+		}
+		unreachableURL, reason, ok, err := errorPage(page)
+		if err != nil {
+			t.Fatalf("errorPage after %s: %v", step.name, err)
+		}
+		if wantOK := step.wantURL != ""; ok != wantOK {
+			t.Fatalf("errorPage after %s = (%q, %q, ok %v), want ok %v", step.name, unreachableURL, reason, ok, wantOK)
+		}
+		if unreachableURL != step.wantURL {
+			t.Errorf("unreachableURL after %s = %q, want %q", step.name, unreachableURL, step.wantURL)
+		}
 	}
 }
 
@@ -2925,7 +2891,8 @@ func TestErrorPage_HistoryAndReload(t *testing.T) {
 // loadFailure is the choke point every navigation command reports through:
 // waitLoaded only wraps it in fatal.
 func TestLoadFailure(t *testing.T) {
-	page, refused := errorPageFixture(t)
+	page := navigateTo(t, "/")
+	refused := refusedURL(t)
 	if err := loadFailure(page, ownSession); err != nil {
 		t.Errorf("loadFailure on the good fixture = %v, want nil", err)
 	}
@@ -2949,7 +2916,7 @@ func TestLoadFailure(t *testing.T) {
 // target navigated or closed") while the error page it went to has already
 // committed. What Chrome shows outranks the lost target either way.
 func TestLoadFailure_OnloadNavigationOutranksTheWaitError(t *testing.T) {
-	_, refused := errorPageFixture(t)
+	refused := refusedURL(t)
 	page, err := env.browser.Page(proto.TargetCreateTarget{
 		URL: env.server.URL + "/onload-navigate?to=" + url.QueryEscape(refused),
 	})

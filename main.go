@@ -272,14 +272,14 @@ func waitLoaded(page *rod.Page, s *State) {
 // a good page: "page loaded, but its state could not be read: %v".
 func loadFailure(page *rod.Page, s *State) error {
 	waitErr := page.WaitLoad()
-	unreachableURL, reason, ok, err := errorPage(page)
+	unreachableURL, reason, ok, treeErr := errorPage(page)
 	switch {
 	case ok:
 		return errors.New(navigationFailure(errorPageFailure(unreachableURL, reason), s))
 	case waitErr != nil:
 		return fmt.Errorf("page did not finish loading: %v", waitErr)
-	case err != nil:
-		return fmt.Errorf("page loaded, but its state could not be read: %v", err)
+	case treeErr != nil:
+		return fmt.Errorf("page loaded, but its state could not be read: %v", treeErr)
 	}
 	return nil
 }
@@ -315,10 +315,10 @@ func errorPage(page *rod.Page) (unreachableURL, reason string, ok bool, err erro
 // body renders "HTTP ERROR <code>". Whatever it is goes out with the URL that
 // failed.
 func errorPageFailure(unreachableURL, reason string) error {
-	switch {
-	case reason == "":
+	if reason == "" {
 		return fmt.Errorf("Chrome shows an error page for %s", unreachableURL)
-	case strings.HasPrefix(reason, "ERR_"):
+	}
+	if strings.HasPrefix(reason, "ERR_") {
 		reason = "net::" + reason
 	}
 	return fmt.Errorf("%s for %s", reason, unreachableURL)
