@@ -2,8 +2,22 @@
 
 package main
 
-import "os/exec"
+import (
+	"os/exec"
+	"time"
+)
 
 func setSysProcAttr(cmd *exec.Cmd) {
 	// SysProcAttr.Setsid is not available on Windows; no-op on this platform
 }
+
+// profileLockPID has no Windows counterpart: Chrome's profile singleton there
+// is a mutex on the "Local State" file, not a symlink naming a PID. No
+// evidence means start never signals a browser that stopped answering.
+func profileLockPID(dataDir string) (int, bool) {
+	return 0, false
+}
+
+// waitPIDGone is only reached behind profileLockPID's evidence, which this
+// platform never has.
+func waitPIDGone(pid int, d time.Duration) {}

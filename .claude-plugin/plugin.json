@@ -1,7 +1,7 @@
 {
   "name": "roddy",
   "description": "Drive headless Chrome from the command line with the roddy CLI \u2014 debug pages, inspect the live DOM, check console errors, fill forms, and take screenshots",
-  "version": "1.7.0",
+  "version": "1.7.1",
   "author": {
     "name": "Eric Posen",
     "url": "https://github.com/goeric"

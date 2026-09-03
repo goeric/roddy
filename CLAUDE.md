@@ -96,7 +96,7 @@ Chrome (pinned Chromium 128 via rod's cache):
   is listed by browser-level `Target.getTargets` as type `iframe`, with no
   `Target.setAutoAttach`, in old headless (the suite) and new headless (spike).
   It is usually there by the parent's load event but not ordered by it — poll
-  (`waitIframeTargets`). The parent's `Page.getFrameTree` then does NOT list
+  (`waitURLs`). The parent's `Page.getFrameTree` then does NOT list
   the child; with isolation off the mirror image holds. The `iframe` target
   still appears under `--single-process` (spike; the security boundary is gone,
   the target is not). Under the stub's browser-level `Fetch.enable` the OOPIF's
