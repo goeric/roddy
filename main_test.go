@@ -69,6 +69,8 @@ func TestMain(m *testing.M) {
 	mux.HandleFunc("/logs-page", handleLogsPage)
 	mux.HandleFunc("/isolation", handleIsolationParent)
 	mux.HandleFunc("/isolation/child", handleIsolationChild)
+	mux.HandleFunc("/never-loads", handleNeverLoads)
+	mux.HandleFunc("/stall", handleStall)
 	// The "/" handler answers every unregistered path, so a 404 has to be one.
 	mux.HandleFunc("/missing-resource", http.NotFound)
 	server := httptest.NewServer(mux)
@@ -77,8 +79,11 @@ func TestMain(m *testing.M) {
 
 	code := m.Run()
 
-	server.Close()
+	// Browser first: httptest's Close waits for handlers still running, and a
+	// fixture that answers only when its client goes away (handleStall) would
+	// otherwise pin teardown until its own timer fires.
 	browser.MustClose()
+	server.Close()
 	os.Exit(code)
 }
 
@@ -192,6 +197,31 @@ func handleOnloadNavigate(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, `<!DOCTYPE html><html><head><title>Onload Navigate</title></head>
 <body><script>addEventListener("load", () => { location.href = %q; });</script></body></html>`,
 		r.URL.Query().Get("to"))
+}
+
+// handleNeverLoads serves a document that commits but never fires
+// window.onload: the image it pulls in goes to handleStall, which never
+// answers.
+func handleNeverLoads(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html")
+	w.Write([]byte(`<!DOCTYPE html>
+<html lang="en">
+<head><title>Never Loads</title></head>
+<body><h1>Never Loads</h1><img src="/stall"></body>
+</html>`))
+}
+
+// handleStall never answers. It gives up when the client goes away and, in
+// case nothing ever closes that request, on its own timer: httptest's Close
+// waits for handlers still running, so a fixture must never be able to pin
+// teardown.
+func handleStall(w http.ResponseWriter, r *http.Request) {
+	t := time.NewTimer(30 * time.Second)
+	defer t.Stop()
+	select {
+	case <-r.Context().Done():
+	case <-t.C:
+	}
 }
 
 func handlePageSW(w http.ResponseWriter, r *http.Request) {

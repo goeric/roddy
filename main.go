@@ -189,7 +189,7 @@ func connectBrowserTimeout(s *State, d time.Duration) (*rod.Browser, error) {
 func getActivePage(browser *rod.Browser, s *State) (*rod.Page, error) {
 	pages, err := browser.Pages()
 	if err != nil {
-		return nil, fmt.Errorf("failed to list pages: %w", err)
+		return nil, listPagesFailure(err)
 	}
 	if len(pages) == 0 {
 		return nil, fmt.Errorf("no pages open")
@@ -199,6 +199,18 @@ func getActivePage(browser *rod.Browser, s *State) (*rod.Page, error) {
 		idx = 0
 	}
 	return pages[idx], nil
+}
+
+// listPagesFailure explains a Pages() that ran out of budget. rod builds a
+// Page per target and calls page.Emulate on each, which the renderer answers —
+// so ONE tab stuck in a pending navigation stalls the listing, and with it
+// every command, not just the ones that touch that tab.
+func listPagesFailure(err error) error {
+	if !errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("failed to list pages: %w", err)
+	}
+	return fmt.Errorf("the browser did not answer within %s; a tab may be stuck "+
+		"loading — wait for it, or run 'roddy stop' then 'roddy start'", defaultTimeout)
 }
 
 func printUsage() {
@@ -512,12 +524,19 @@ func init() {
 
 // withPage loads state, connects, and returns the active page.
 // Caller should NOT close the browser (we just disconnect).
+//
+// defaultTimeout is the whole per-command budget and it goes on the BROWSER:
+// rod's Page.Timeout only clones the Page, never re-pointing p.root, and
+// WaitRepaint evals on p.root (as Page.Info dispatches on p.browser). The page
+// clone below bounds nothing the browser deadline does not already bound (its
+// ctx is a child of the browser's); it is kept so a page handed on to a helper
+// carries a deadline of its own.
 func withPage() (*State, *rod.Browser, *rod.Page) {
 	s, err := loadState()
 	if err != nil {
 		fatal("%v", err)
 	}
-	browser, err := connectBrowser(s)
+	browser, err := connectBrowserTimeout(s, defaultTimeout)
 	if err != nil {
 		fatal("%v", err)
 	}
@@ -525,9 +544,54 @@ func withPage() (*State, *rod.Browser, *rod.Page) {
 	if err != nil {
 		fatal("%v", err)
 	}
-	// Apply default timeout so element queries don't hang forever
 	page = page.Timeout(defaultTimeout)
 	return s, browser, page
+}
+
+// raise makes page the foreground target for a command that is about to drive
+// or capture it, and returns the refusal if the target still produces no frames.
+//
+// Callers: click, input, clear, hover, focus and screenshot-el (after the
+// selector resolves -- a typo must not switch the user's tab), and screenshot
+// before the capture. select, submit and file stay off it: they set the value
+// by eval or through SetFiles, none of which scrolls, so they never touch the
+// animation-frame wait. Reads stay off it because raising a target is visible
+// in --show mode and "roddy text" has no business switching tabs.
+func raise(page *rod.Page) error {
+	bringToFront(page)
+	return paintFailure(page)
+}
+
+// paintProbe is how long a raised target gets to produce one animation frame.
+// A tab already in front answers in 4-6ms; one whose compositor had to resume
+// takes ~1s for the first frame and 4-8ms after (suite). A tab that will not
+// paint never answers at all, so the margin is what matters, not the mean.
+const paintProbe = 5 * time.Second
+
+// paintFailure reports a target that produces no animation frames -- what
+// every interaction (ScrollIntoView -> WaitStableRAF -> WaitRepaint) and every
+// capture ends up waiting for. Target.activateTarget selects a tab but cannot
+// raise a minimized or occluded window (--show, or a Chrome roddy only
+// connected to), and the command would sit out its whole budget to report a
+// bare "context deadline exceeded".
+//
+// document.visibilityState is NOT the test: measured on a raised tab still
+// reading "hidden", a click reached its handler and a full-page screenshot
+// returned (suite). So ask for the frame itself.
+//
+// Only a deadline is a verdict. Any other eval error means the target is
+// closing or navigating, and the work that follows reports that better, for
+// the reason bringToFront ignores its own error. The probe evals on a clone
+// with its own deadline, so unlike WaitRepaint -- which evals on p.root -- it
+// cannot hang.
+func paintFailure(page *rod.Page) error {
+	_, err := page.Timeout(paintProbe).Eval(`() => new Promise(r => requestAnimationFrame(r))`)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		return nil
+	}
+	return fmt.Errorf("the page produced no animation frame within %s, so it is not being "+
+		"rendered and this would wait out the timeout — its window may be minimized or "+
+		"occluded; raise the browser window, or run 'roddy page <i>' to switch tabs", paintProbe)
 }
 
 // bringToFront makes page the browser's foreground target.
@@ -535,18 +599,19 @@ func withPage() (*State, *rod.Browser, *rod.Page) {
 // roddy's "active page" is only an index in its own state file; the browser is
 // never told about it, so after "roddy page N" the foreground target is still
 // whichever one was opened last. DOM and JS commands do not care -- they read a
-// hidden target perfectly well -- but a backgrounded target has no compositor
-// producing frames, and Page.captureScreenshot simply waits for one that never
-// arrives until the context deadline expires:
-//
-//	error: screenshot failed: context deadline exceeded
-//
-// So every command that captures pixels has to raise its target first.
+// hidden target perfectly well -- but a backgrounded target neither composites
+// frames nor runs requestAnimationFrame, and two rod waits sit on those:
+// Page.captureScreenshot waits for a frame that never arrives, and
+// ScrollIntoView -> WaitStableRAF -> Page.WaitRepaint for an animation frame
+// that never comes. Both burn the command's whole deadline and report "context
+// deadline exceeded" -- the second only because that deadline is the browser's,
+// since WaitRepaint evals on p.root, which no page deadline reaches. Hence
+// raise, which every command that drives or captures the page calls first.
 //
 // Errors are deliberately ignored. Activation failing means the target or the
-// browser is gone, in which case the capture that follows reports the real
+// browser is gone, in which case the work that follows reports the real
 // problem; turning that into an error here would only replace a good message
-// with a worse one, and would risk failing captures that would have worked.
+// with a worse one, and would risk failing commands that would have worked.
 func bringToFront(page *rod.Page) {
 	_, _ = page.Activate()
 }
@@ -1232,13 +1297,18 @@ func cmdStatus(args []string) {
 		fmt.Println("No active browser session")
 		return
 	}
-	browser, err := connectBrowser(s)
+	browser, err := connectBrowserTimeout(s, defaultTimeout)
 	if err != nil {
 		fmt.Printf("Browser not responding (PID %d, state may be stale)\n", s.ChromePID)
 		printStatusProxy(s, os.Stdout)
 		return
 	}
-	pages, _ := browser.Pages()
+	// A listing that ran out of budget is not an empty browser: reporting
+	// "Pages: 0" for a wedged renderer would be a lie.
+	pages, err := browser.Pages()
+	if err != nil {
+		fatal("%v", listPagesFailure(err))
+	}
 	fmt.Printf("Browser running (PID %d)\n", s.ChromePID)
 	fmt.Printf("Debug URL: %s\n", s.DebugURL)
 	fmt.Printf("Pages: %d\n", len(pages))
@@ -1334,6 +1404,19 @@ func navigationFailure(err error, s *State) string {
 	return msg
 }
 
+// navigateFailure formats what open and newpage get back from Navigate or
+// browser.Page. A context deadline there is not a navigation error at all:
+// Page.navigate answers only once the document commits or the load fails, so a
+// server that accepts the connection and never sends a response leaves the
+// call waiting out the whole budget. Kept distinct from "page did not finish
+// loading", which is the wait AFTER a document committed.
+func navigateFailure(err error, url string, s *State) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Sprintf("navigation to %s did not complete within %s", url, defaultTimeout)
+	}
+	return navigationFailure(err, s)
+}
+
 func cmdOpen(args []string) {
 	if len(args) < 1 {
 		fatal("usage: roddy open <url>")
@@ -1344,18 +1427,22 @@ func cmdOpen(args []string) {
 	if err != nil {
 		fatal("%v", err)
 	}
-	browser, err := connectBrowser(s)
+	browser, err := connectBrowserTimeout(s, defaultTimeout)
 	if err != nil {
 		fatal("%v", err)
 	}
 
-	// If no pages exist, create one
-	pages, _ := browser.Pages()
+	// A listing that failed is not an empty browser: taken for one, open would
+	// silently add a tab and reset the active-page index.
+	pages, err := browser.Pages()
+	if err != nil {
+		fatal("%v", listPagesFailure(err))
+	}
 	var page *rod.Page
 	if len(pages) == 0 {
 		page, err = browser.Page(proto.TargetCreateTarget{URL: url})
 		if err != nil {
-			fatal("%s", navigationFailure(err, s))
+			fatal("%s", navigateFailure(err, url, s))
 		}
 		s.ActivePage = 0
 		if err := saveState(s); err != nil {
@@ -1367,14 +1454,15 @@ func cmdOpen(args []string) {
 			fatal("%v", err)
 		}
 		if err := page.Navigate(url); err != nil {
-			fatal("%s", navigationFailure(err, s))
+			fatal("%s", navigateFailure(err, url, s))
 		}
 	}
 	waitLoaded(page, s)
-	info, _ := page.Info()
-	if info != nil {
-		fmt.Println(info.Title)
+	info, err := page.Info()
+	if err != nil {
+		fatal("page loaded, but its info could not be read: %v", err)
 	}
+	fmt.Println(info.Title)
 }
 
 func cmdBack(args []string) {
@@ -1581,6 +1669,9 @@ func cmdClick(args []string) {
 	if err != nil {
 		fatal("element not found: %v", err)
 	}
+	if err := raise(page); err != nil {
+		fatal("%v", err)
+	}
 	if err := el.Click(proto.InputMouseButtonLeft, 1); err != nil {
 		fatal("click failed: %v", err)
 	}
@@ -1598,6 +1689,9 @@ func cmdInput(args []string) {
 	if err != nil {
 		fatal("element not found: %v", err)
 	}
+	if err := raise(page); err != nil {
+		fatal("%v", err)
+	}
 	text := strings.Join(args[1:], " ")
 	typeInto(el, text)
 	fmt.Printf("Typed: %s\n", text)
@@ -1611,6 +1705,9 @@ func cmdClear(args []string) {
 	el, err := page.Element(args[0])
 	if err != nil {
 		fatal("element not found: %v", err)
+	}
+	if err := raise(page); err != nil {
+		fatal("%v", err)
 	}
 	typeInto(el, "")
 	fmt.Println("Cleared")
@@ -1860,6 +1957,9 @@ func cmdHover(args []string) {
 	if err != nil {
 		fatal("element not found: %v", err)
 	}
+	if err := raise(page); err != nil {
+		fatal("%v", err)
+	}
 	if err := el.Hover(); err != nil {
 		fatal("hover failed: %v", err)
 	}
@@ -1874,6 +1974,9 @@ func cmdFocus(args []string) {
 	el, err := page.Element(args[0])
 	if err != nil {
 		fatal("element not found: %v", err)
+	}
+	if err := raise(page); err != nil {
+		fatal("%v", err)
 	}
 	if err := el.Focus(); err != nil {
 		fatal("focus failed: %v", err)
@@ -1971,7 +2074,9 @@ func cmdScreenshot(args []string) {
 	}
 
 	_, _, page := withPage()
-	bringToFront(page)
+	if err := raise(page); err != nil {
+		fatal("%v", err)
+	}
 
 	// Set viewport size
 	viewportHeight := *height
@@ -2006,10 +2111,12 @@ func cmdScreenshotEl(args []string) {
 		file = args[1]
 	}
 	_, _, page := withPage()
-	bringToFront(page)
 	el, err := page.Element(args[0])
 	if err != nil {
 		fatal("element not found: %v", err)
+	}
+	if err := raise(page); err != nil {
+		fatal("%v", err)
 	}
 	data, err := el.Screenshot(proto.PageCaptureScreenshotFormatPng, 0)
 	if err != nil {
@@ -2026,13 +2133,13 @@ func cmdPages(args []string) {
 	if err != nil {
 		fatal("%v", err)
 	}
-	browser, err := connectBrowser(s)
+	browser, err := connectBrowserTimeout(s, defaultTimeout)
 	if err != nil {
 		fatal("%v", err)
 	}
 	pages, err := browser.Pages()
 	if err != nil {
-		fatal("failed to list pages: %v", err)
+		fatal("%v", listPagesFailure(err))
 	}
 	for i, p := range pages {
 		marker := " "
@@ -2060,13 +2167,13 @@ func cmdPage(args []string) {
 	if err != nil {
 		fatal("%v", err)
 	}
-	browser, err := connectBrowser(s)
+	browser, err := connectBrowserTimeout(s, defaultTimeout)
 	if err != nil {
 		fatal("%v", err)
 	}
 	pages, err := browser.Pages()
 	if err != nil {
-		fatal("failed to list pages: %v", err)
+		fatal("%v", listPagesFailure(err))
 	}
 	if idx < 0 || idx >= len(pages) {
 		fatal("page index %d out of range (0-%d)", idx, len(pages)-1)
@@ -2089,7 +2196,7 @@ func cmdNewPage(args []string) {
 	if err != nil {
 		fatal("%v", err)
 	}
-	browser, err := connectBrowser(s)
+	browser, err := connectBrowserTimeout(s, defaultTimeout)
 	if err != nil {
 		fatal("%v", err)
 	}
@@ -2102,14 +2209,17 @@ func cmdNewPage(args []string) {
 	// An empty URL opens a blank page.
 	page, err := browser.Page(proto.TargetCreateTarget{URL: url})
 	if err != nil {
-		fatal("%s", navigationFailure(err, s))
+		fatal("%s", navigateFailure(err, url, s))
 	}
 	if url != "" {
 		waitLoaded(page, s)
 	}
 
 	// Switch active to the new page
-	pages, _ := browser.Pages()
+	pages, err := browser.Pages()
+	if err != nil {
+		fatal("page opened, but the page list could not be read (the active page did not switch): %v", err)
+	}
 	for i, p := range pages {
 		if p.TargetID == page.TargetID {
 			s.ActivePage = i
@@ -2120,10 +2230,11 @@ func cmdNewPage(args []string) {
 		fatal("page opened, but failed to save state (the active page did not switch): %v", err)
 	}
 
-	info, _ := page.Info()
-	if info != nil {
-		fmt.Printf("Opened [%d] %s\n", s.ActivePage, info.URL)
+	info, err := page.Info()
+	if err != nil {
+		fatal("page loaded, but its info could not be read: %v", err)
 	}
+	fmt.Printf("Opened [%d] %s\n", s.ActivePage, info.URL)
 }
 
 func cmdClosePage(args []string) {
@@ -2131,13 +2242,13 @@ func cmdClosePage(args []string) {
 	if err != nil {
 		fatal("%v", err)
 	}
-	browser, err := connectBrowser(s)
+	browser, err := connectBrowserTimeout(s, defaultTimeout)
 	if err != nil {
 		fatal("%v", err)
 	}
 	pages, err := browser.Pages()
 	if err != nil {
-		fatal("failed to list pages: %v", err)
+		fatal("%v", listPagesFailure(err))
 	}
 	if len(pages) <= 1 {
 		fatal("cannot close the last page")

@@ -145,8 +145,9 @@ Use "roddy start --local" to create a directory-scoped session.
 
 Environment:
   RODDY_HOME                     Override data directory (default: ~/.roddy)
-  ROD_TIMEOUT                    Timeout in seconds for a single operation,
-                                  including a "sw eval" (default: 30)
+  ROD_TIMEOUT                    Budget in seconds for a whole command,
+                                  connecting to Chrome included, and for a
+                                  "sw eval" (default: 30)
 
 Exit codes:
   0  Success
