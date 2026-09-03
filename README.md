@@ -119,6 +119,14 @@ roddy status                               # Show browser info and active page
 roddy stop                                 # Shut down Chrome
 ```
 
+A second `start`, and a `connect` to a different browser, replace the recorded
+session rather than adding one: the auth proxy helper is stopped (while its
+port still answers) and a Chrome roddy launched is closed (a browser attached
+with `connect` is left running). `connect` does this only once the new browser
+has answered, and not at all when it names the browser roddy is already
+driving. If the recorded session's Chrome cannot be confirmed stopped, `connect`
+refuses and keeps that session, so `roddy stop` still has a way back to it.
+
 Chrome runs with its sandbox on by default. Running as root implies
 `--no-sandbox` — Chrome refuses to sandbox there — and so does a container
 detected by its marker files or environment (Docker, Podman, Kubernetes, and
@@ -813,7 +821,7 @@ The tool uses the [rod](https://github.com/go-rod/rod) Go library which communic
 | Command | Arguments | Description |
 |---|---|---|
 | `start` | `[--show] [--insecure\|-k] [--no-sandbox] [--extension PATH] [--no-extension] [--single-process\|--no-single-process]` | Launch Chrome (headless by default, `--show` for visible) |
-| `connect` | `<host:port>` | Connect to existing Chrome on remote debug port |
+| `connect` | `<host:port>` | Connect to existing Chrome on remote debug port (replaces the recorded session, as a second `start` does) |
 | `stop` | | Shut down Chrome |
 | `status` | | Show browser status |
 | `extensions` | | List extensions loaded into this session |
