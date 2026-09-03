@@ -94,6 +94,14 @@ func (c *sleepChild) alive() bool {
 	}
 }
 
+// assertTerminated fails unless c exited on the SIGTERM a retire sent it.
+func assertTerminated(t *testing.T, c *sleepChild) {
+	t.Helper()
+	if err := c.waitExit(t, 3*time.Second); err == nil || !strings.Contains(err.Error(), "signal: terminated") {
+		t.Errorf("PID %d exit = %v, want signal: terminated", c.pid, err)
+	}
+}
+
 // assertUnsignalled fails if c was signalled. A SIGTERM already sent lands well
 // inside the wait; it only rules out racing the check against the signal.
 func assertUnsignalled(t *testing.T, c *sleepChild) {
@@ -118,9 +126,7 @@ func TestRetireSession_SignalsALiveProxyHelper(t *testing.T) {
 		ProxyPort: ln.Addr().(*net.TCPAddr).Port,
 	}, io.Discard)
 
-	if err := helper.waitExit(t, 3*time.Second); err == nil || !strings.Contains(err.Error(), "signal: terminated") {
-		t.Errorf("helper exit = %v, want signal: terminated", err)
-	}
+	assertTerminated(t, helper)
 }
 
 // A recorded helper PID whose port no longer answers is not that helper any
@@ -275,16 +281,12 @@ func TestConnectState_RetiresAProxiedConnectSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connectState = %v, want no error", err)
 	}
-	if err := helper.waitExit(t, 3*time.Second); err == nil || !strings.Contains(err.Error(), "signal: terminated") {
-		t.Errorf("helper exit = %v, want signal: terminated", err)
-	}
+	assertTerminated(t, helper)
 	want := fmt.Sprintf("note: replacing the connected session at %s; that browser stays running\n", debugHost(old.DebugURL))
 	if notes.String() != want {
 		t.Errorf("notes = %q, want %q", notes.String(), want)
 	}
-	if save.DebugURL != debugURL || save.ChromePID != 0 || save.ProxyPID != 0 || save.ProxyPort != 0 {
-		t.Errorf("connectState = %+v, want a fresh connect session at %s", save, debugURL)
-	}
+	assertFreshConnectSession(t, save, debugURL)
 }
 
 // The issue's headline scenario in one call: a proxied start, then a connect
@@ -303,17 +305,13 @@ func TestConnectState_ClosesAProxiedOwnedChrome(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connectState = %v, want no error", err)
 	}
-	if err := helper.waitExit(t, 3*time.Second); err == nil || !strings.Contains(err.Error(), "signal: terminated") {
-		t.Errorf("helper exit = %v, want signal: terminated", err)
-	}
+	assertTerminated(t, helper)
 	waitProcessGone(t, l.PID())
 	if browser, err := connectBrowser(old); err == nil {
 		_ = browser.Close()
 		t.Error("owned browser still answering after connect retired it")
 	}
-	if save.DebugURL != debugURL || save.ChromePID != 0 || save.ProxyPID != 0 || save.ProxyPort != 0 {
-		t.Errorf("connectState = %+v, want a fresh connect session at %s", save, debugURL)
-	}
+	assertFreshConnectSession(t, save, debugURL)
 }
 
 // Reconnecting to the browser roddy already drives at the address already
@@ -376,8 +374,8 @@ func TestConnectState_RecordsTheSameBrowserAtANewAddress(t *testing.T) {
 	if save == nil || !reflect.DeepEqual(*save, want) {
 		t.Errorf("connectState = %+v, want %+v", save, want)
 	}
-	if got := fmt.Sprintf("note: already connected to this browser; recording it at %s\n", debugHost(debugURL)); notes.String() != got {
-		t.Errorf("notes = %q, want %q", notes.String(), got)
+	if wantNote := fmt.Sprintf("note: already connected to this browser; recording it at %s\n", debugHost(debugURL)); notes.String() != wantNote {
+		t.Errorf("notes = %q, want %q", notes.String(), wantNote)
 	}
 	assertUnsignalled(t, chrome)
 	assertUnsignalled(t, helper)

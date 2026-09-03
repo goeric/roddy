@@ -181,31 +181,36 @@ func connectBrowser(s *State) (*rod.Browser, error) {
 
 // connectBrowserTimeout is connectBrowser with a bound (d<=0: none) on
 // reaching the browser, and rod's own deadline on every call made with the
-// returned browser. The bound has to be roddy's: rod's Timeout reaches only
-// cdp's dial, and WebSocket.Connect then reads the upgrade response with
-// http.ReadResponse on the raw connection, setting no deadline — a Chrome that
-// accepts the connection and never answers the handshake hangs Connect
-// forever. The abandoned goroutine is parked in that read and nothing can
-// interrupt it; the process it leaks in is about to exit.
+// returned browser.
 func connectBrowserTimeout(s *State, d time.Duration) (*rod.Browser, error) {
 	browser := rod.New().ControlURL(s.DebugURL)
-	if d <= 0 {
-		if err := browser.Connect(); err != nil {
-			return nil, fmt.Errorf("failed to connect to browser (is it still running?): %w", err)
-		}
-		return browser, nil
+	if d > 0 {
+		browser = browser.Timeout(d)
 	}
-	browser = browser.Timeout(d)
+	if err := connectWithin(browser, d); err != nil {
+		return nil, fmt.Errorf("failed to connect to browser (is it still running?): %w", err)
+	}
+	return browser, nil
+}
+
+// connectWithin bounds Connect at d (d<=0: unbounded). The bound has to be
+// roddy's: rod's Timeout reaches only cdp's dial, and WebSocket.Connect then
+// reads the upgrade response with http.ReadResponse on the raw connection,
+// setting no deadline — a Chrome that accepts the connection and never answers
+// the handshake hangs Connect forever. The abandoned goroutine is parked in
+// that read and nothing can interrupt it; the process it leaks in is about to
+// exit.
+func connectWithin(browser *rod.Browser, d time.Duration) error {
+	if d <= 0 {
+		return browser.Connect()
+	}
 	connected := make(chan error, 1)
 	go func() { connected <- browser.Connect() }()
 	select {
 	case err := <-connected:
-		if err != nil {
-			return nil, fmt.Errorf("failed to connect to browser (is it still running?): %w", err)
-		}
-		return browser, nil
+		return err
 	case <-time.After(d):
-		return nil, fmt.Errorf("failed to connect to browser (is it still running?): no answer on the debug socket within %v", d)
+		return fmt.Errorf("no answer on the debug socket within %v", d)
 	}
 }
 
@@ -847,14 +852,18 @@ const (
 	retireExitTimeout = 3 * time.Second
 )
 
-// signalAndConfirm SIGTERMs pid and reports whether it is confirmed out of the
-// process table within retireExitTimeout. A platform that cannot probe a PID
-// (Windows) has no evidence to the contrary, so it reports confirmed.
-func signalAndConfirm(pid int) bool {
+// signalAndConfirm SIGTERMs the recorded browser's pid and reports whether it
+// is confirmed out of the process table within retireExitTimeout, saying on w
+// when it is not. A platform that cannot probe a PID (Windows) has no evidence
+// to the contrary, so it reports confirmed.
+func signalAndConfirm(pid int, w io.Writer) bool {
 	signalPID(pid)
 	waitPIDGone(pid, retireExitTimeout)
-	gone, known := pidGone(pid)
-	return gone || !known
+	if gone, known := pidGone(pid); known && !gone {
+		fmt.Fprintf(w, "note: previous Chrome (PID %d) has not exited within %v of SIGTERM; the session is kept\n", pid, retireExitTimeout)
+		return false
+	}
+	return true
 }
 
 // retireSession clears a recorded session out of a new session's way: the
@@ -891,8 +900,7 @@ func retireSession(s *State, w io.Writer) bool {
 	// leave Chrome running with the state that knows its PID about to go. The
 	// connect answered on this session's own per-launch DebugURL, so that PID
 	// is that Chrome and not one the system recycled.
-	if err := b.Close(); err != nil && !signalAndConfirm(s.ChromePID) {
-		fmt.Fprintf(w, "note: previous Chrome (PID %d) has not exited within %v of SIGTERM; the session is kept\n", s.ChromePID, retireExitTimeout)
+	if err := b.Close(); err != nil && !signalAndConfirm(s.ChromePID, w) {
 		return false
 	}
 	removeState()
@@ -918,8 +926,7 @@ func retireUnresponsive(s *State, w io.Writer) bool {
 		return false
 	}
 	fmt.Fprintf(w, "note: stopping the previous Chrome (PID %d), which was not answering on its debug socket\n", s.ChromePID)
-	if !signalAndConfirm(s.ChromePID) {
-		fmt.Fprintf(w, "note: previous Chrome (PID %d) has not exited within %v of SIGTERM; the session is kept\n", s.ChromePID, retireExitTimeout)
+	if !signalAndConfirm(s.ChromePID, w) {
 		return false
 	}
 	removeState()
@@ -963,9 +970,9 @@ func cmdStart(args []string) {
 		fatal("%s", err)
 	}
 
-	// Check if already running. A state file that is there but unreadable still
-	// names a browser this cannot reach; the launch below has Chrome's own
-	// SingletonLock as its backstop, so say so and go on.
+	// A state file that is there but unreadable still names a browser this
+	// cannot reach; the launch below has Chrome's own SingletonLock as its
+	// backstop, so say so and go on.
 	s, err := loadState()
 	switch {
 	case err == nil:
@@ -1165,7 +1172,7 @@ const devtoolsBrowserPrefix = "/devtools/browser/"
 // identity, and neither is an unparseable URL.
 func browserID(debugURL string) (string, bool) {
 	u, err := url.Parse(debugURL)
-	if err != nil || !strings.HasPrefix(u.Path, devtoolsBrowserPrefix) || len(u.Path) == len(devtoolsBrowserPrefix) {
+	if err != nil || !strings.HasPrefix(u.Path, devtoolsBrowserPrefix) || u.Path == devtoolsBrowserPrefix {
 		return "", false
 	}
 	return u.Path, true
@@ -1260,7 +1267,7 @@ func cmdConnect(args []string) {
 	}
 	save, err := connectState(old, info.WebSocketDebuggerURL, os.Stderr)
 	if err != nil {
-		fatal("%s", err)
+		fatal("%v", err)
 	}
 	if save != nil {
 		if err := saveState(save); err != nil {

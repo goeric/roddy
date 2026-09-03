@@ -2713,6 +2713,16 @@ func TestSameBrowser(t *testing.T) {
 	}
 }
 
+// assertFreshConnectSession fails unless s records the newly attached browser
+// and nothing else: no PID to close, and no trace of the Chrome or the proxy
+// helper the connect retired.
+func assertFreshConnectSession(t *testing.T, s *State, debugURL string) {
+	t.Helper()
+	if !reflect.DeepEqual(s, &State{DebugURL: debugURL}) {
+		t.Errorf("connectState = %+v, want a fresh connect session at %s", s, debugURL)
+	}
+}
+
 // Nothing to retire and nothing to say: connect is the first command of the
 // session.
 func TestConnectState_WithNoPreviousSession(t *testing.T) {
@@ -2722,9 +2732,7 @@ func TestConnectState_WithNoPreviousSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connectState(nil) = %v, want no error", err)
 	}
-	if save.DebugURL != debugURL || save.ChromePID != 0 || save.ActivePage != 0 {
-		t.Errorf("connectState(nil) = %+v, want a fresh connect session at %s", save, debugURL)
-	}
+	assertFreshConnectSession(t, save, debugURL)
 	if notes.Len() > 0 {
 		t.Errorf("notes = %q, want nothing when there was no session", notes.String())
 	}
@@ -2752,33 +2760,13 @@ func TestConnectState_ClosesAnOwnedChrome(t *testing.T) {
 		_ = browser.Close()
 		t.Error("owned browser still answering after connect retired it")
 	}
-	if save.DebugURL != debugURL || save.ChromePID != 0 {
-		t.Errorf("connectState = %+v, want a fresh connect session at %s", save, debugURL)
-	}
+	assertFreshConnectSession(t, save, debugURL)
 }
 
 // rod's cdp handshake reads the upgrade response with no deadline, so only
 // roddy's own timer ends a connect to a socket that accepts and stays silent.
 func TestConnectBrowserTimeout_BoundsTheHandshake(t *testing.T) {
-	ln := listenLoopback(t)
-	accepted := make(chan net.Conn, 1)
-	go func() {
-		conn, err := ln.Accept()
-		if err != nil {
-			return
-		}
-		accepted <- conn
-	}()
-	t.Cleanup(func() {
-		_ = ln.Close()
-		select {
-		case conn := <-accepted:
-			_ = conn.Close()
-		default:
-		}
-	})
-
-	s := &State{DebugURL: "ws://" + ln.Addr().String() + "/devtools/browser/x"}
+	s := &State{DebugURL: fmt.Sprintf("ws://127.0.0.1:%d/devtools/browser/x", livePort(t))}
 	done := make(chan error, 1)
 	go func() {
 		_, err := connectBrowserTimeout(s, 500*time.Millisecond)
