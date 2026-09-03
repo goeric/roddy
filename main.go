@@ -722,6 +722,30 @@ func startAttemptLauncher(base startLaunch, mode singleProcessMode, extensionsFr
 	}
 }
 
+// retireSession clears a recorded session out of a new start's way: the proxy
+// helper always, the browser only when roddy launched it. If ChromePID==0 we
+// connected to an external browser; just clear state without closing it — the
+// new start writes a fresh state file over it either way.
+func retireSession(s *State) {
+	// Quietly, as stop does. An old helper still holds a descriptor on
+	// proxy.log, which the new start truncates, and its later writes would
+	// punch holes in the log that start reports from: SIGTERM first, and it
+	// normally exits before the truncate.
+	if proxyHelperAlive(s.ProxyPort) {
+		signalPID(s.ProxyPID)
+	}
+	if s.ChromePID == 0 {
+		removeState()
+		return
+	}
+	if b, err := connectBrowser(s); err == nil {
+		// Best effort: a half-dead old browser must not block starting a
+		// new one. (rod's Browser.MustClose is the same discard.)
+		_ = b.Close()
+		removeState()
+	}
+}
+
 func cmdStart(args []string) {
 	opts, err := parseStartArgs(args)
 	if err != nil {
@@ -752,21 +776,7 @@ func cmdStart(args []string) {
 
 	// Check if already running
 	if s, err := loadState(); err == nil {
-		// Quietly, as stop does. An old helper still holds a descriptor on
-		// proxy.log, which this start truncates, and its later writes would
-		// punch holes in the log this start reports from: SIGTERM first, and
-		// it normally exits before the truncate below.
-		if proxyHelperAlive(s.ProxyPort) {
-			signalPID(s.ProxyPID)
-		}
-		// Try connecting
-		if b, err := connectBrowser(s); err == nil {
-			// Best effort: a half-dead old browser must not block starting a
-			// new one. (rod's Browser.MustClose is the same discard.)
-			_ = b.Close()
-			// It was actually running, warn
-			removeState()
-		}
+		retireSession(s)
 	}
 
 	extensions := loadExtensions(opts.extensions)

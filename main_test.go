@@ -2537,6 +2537,83 @@ func launcherPage(t *testing.T, l *launcher.Launcher) (*rod.Page, func()) {
 	}
 }
 
+// --- retireSession ---
+
+// retireFixture launches the Chrome a retireSession test hands to a State and
+// returns its debug URL. RODDY_HOME keeps removeState inside the test's temp
+// dir; teardown runs on every path, including the one where retireSession
+// already closed the browser (Kill on a dead process is a no-op).
+func retireFixture(t *testing.T) (*launcher.Launcher, string) {
+	t.Helper()
+	t.Setenv("RODDY_HOME", t.TempDir())
+	l := newStartLauncher(startLaunch{dataDir: t.TempDir(), headless: true, unsandboxed: true})
+	u, err := l.Launch()
+	if err != nil {
+		t.Fatalf("launch: %v", err)
+	}
+	t.Cleanup(func() {
+		l.Kill()
+		waitProcessGone(t, l.PID())
+	})
+	return l, u
+}
+
+// ChromePID 0 is a connect session: start drops the state file but must leave
+// the user's own Chrome running, as stop does.
+func TestRetireSession_LeavesAConnectSessionsBrowserRunning(t *testing.T) {
+	_, u := retireFixture(t)
+	s := &State{DebugURL: u}
+	if err := saveState(s); err != nil {
+		t.Fatalf("save state: %v", err)
+	}
+
+	retireSession(s)
+
+	if _, err := os.Stat(statePath()); !os.IsNotExist(err) {
+		t.Errorf("stat state file = %v, want it removed", err)
+	}
+	browser, err := connectBrowser(s)
+	if err != nil {
+		t.Fatalf("external browser gone after retireSession: %v", err)
+	}
+	defer func() { _ = browser.Close() }()
+	// A live socket is not a live browser: drive a page to prove it.
+	page, err := browser.Page(proto.TargetCreateTarget{URL: env.server.URL + "/"})
+	if err != nil {
+		t.Fatalf("open a page on the external browser: %v", err)
+	}
+	if err := page.WaitLoad(); err != nil {
+		t.Fatalf("wait for load: %v", err)
+	}
+	info, err := page.Info()
+	if err != nil {
+		t.Fatalf("page info: %v", err)
+	}
+	if info.Title != "Test Page" {
+		t.Errorf("title = %q, want %q", info.Title, "Test Page")
+	}
+}
+
+// The browser roddy launched itself is the one start closes.
+func TestRetireSession_ClosesAnOwnedBrowser(t *testing.T) {
+	l, u := retireFixture(t)
+	s := &State{DebugURL: u, ChromePID: l.PID()}
+	if err := saveState(s); err != nil {
+		t.Fatalf("save state: %v", err)
+	}
+
+	retireSession(s)
+
+	waitProcessGone(t, l.PID())
+	if browser, err := connectBrowser(s); err == nil {
+		_ = browser.Close()
+		t.Error("owned browser still answering after retireSession")
+	}
+	if _, err := os.Stat(statePath()); !os.IsNotExist(err) {
+		t.Errorf("stat state file = %v, want it removed", err)
+	}
+}
+
 // --- navigationFailure ---
 
 // ownSession is what open works with unless the user attached with connect.
