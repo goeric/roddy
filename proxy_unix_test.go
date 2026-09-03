@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"net"
 	"strings"
 	"testing"
 	"time"
@@ -19,12 +18,11 @@ import (
 // the whole story.
 func TestStopRecordedProxy_SignalsALiveHelper(t *testing.T) {
 	t.Setenv("RODDY_HOME", t.TempDir())
-	ln := listenLoopback(t)
-	defer ln.Close()
+	port := livePort(t)
 	helper := startSleepChild(t)
 
 	var out bytes.Buffer
-	stopRecordedProxy(&State{ProxyPID: helper.pid, ProxyPort: ln.Addr().(*net.TCPAddr).Port}, &out)
+	stopRecordedProxy(&State{ProxyPID: helper.pid, ProxyPort: port}, &out)
 
 	if err := helper.waitExit(t, 3*time.Second); err == nil || !strings.Contains(err.Error(), "signal: terminated") {
 		t.Errorf("helper exit = %v, want signal: terminated", err)
@@ -67,9 +65,7 @@ func TestStopRecordedProxy_SaysNothingForAnUnproxiedSession(t *testing.T) {
 // must not send the user to a log nothing writes to any more.
 func TestNavigationFailure_SquatterOnTheHelperPort(t *testing.T) {
 	t.Setenv("RODDY_HOME", t.TempDir())
-	ln := listenLoopback(t)
-	defer ln.Close()
-	port := ln.Addr().(*net.TCPAddr).Port
+	port := livePort(t)
 	gone := startSleepChild(t)
 	signalPID(gone.pid)
 	gone.waitExit(t, 3*time.Second)

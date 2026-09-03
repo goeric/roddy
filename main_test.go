@@ -2316,6 +2316,15 @@ func deadPort(t *testing.T) int {
 	return port
 }
 
+// livePort returns a loopback port a listener answers on for the rest of the
+// test — what proxyHelperAlive reads as a helper still being there.
+func livePort(t *testing.T) int {
+	t.Helper()
+	ln := listenLoopback(t)
+	t.Cleanup(func() { _ = ln.Close() })
+	return ln.Addr().(*net.TCPAddr).Port
+}
+
 // Chrome renders every synthesized 502 as ERR_TUNNEL_CONNECTION_FAILED, and
 // open sends the user to proxy.log for the cause: an unlogged failure leaves
 // that log empty. The credential must not go with it.
@@ -2747,9 +2756,7 @@ var proxyFailureTexts = []string{"net::ERR_TUNNEL_CONNECTION_FAILED", "net::ERR_
 // upstream it dials is.
 func TestNavigationFailure_LiveHelperBlamesTheUpstream(t *testing.T) {
 	t.Setenv("RODDY_HOME", t.TempDir())
-	ln := listenLoopback(t)
-	defer ln.Close()
-	port := ln.Addr().(*net.TCPAddr).Port
+	port := livePort(t)
 	for _, text := range proxyFailureTexts {
 		// This process stands in for the helper: its own PID reads alive.
 		msg := navigationFailure(errors.New(text), &State{ChromePID: 4242, ProxyPID: os.Getpid(), ProxyPort: port})
