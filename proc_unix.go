@@ -47,6 +47,12 @@ func proxyPIDAlive(pid int) bool {
 	return pidAlive(pid)
 }
 
+// pidGone reports whether pid has left the process table, and whether this
+// platform can tell at all. Signal 0 answers here, so the answer is known.
+func pidGone(pid int) (gone, known bool) {
+	return !pidAlive(pid), true
+}
+
 // waitPIDGone blocks until pid leaves the process table, up to d; a pid that
 // outlives d just returns.
 func waitPIDGone(pid int, d time.Duration) {

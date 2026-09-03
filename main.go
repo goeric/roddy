@@ -10,6 +10,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net"
 	"net/http"
@@ -91,7 +92,7 @@ func resolveStateDir(mode scopeMode, workingDir string) string {
 // State persisted between CLI invocations
 type State struct {
 	DebugURL   string `json:"debug_url"`
-	ChromePID  int    `json:"chrome_pid"`
+	ChromePID  int    `json:"chrome_pid"`  // 0: attached with connect, not roddy's to close
 	ActivePage int    `json:"active_page"` // index into pages list
 	DataDir    string `json:"data_dir"`
 	ProxyPID   int    `json:"proxy_pid,omitempty"`  // PID of auth proxy helper
@@ -137,14 +138,23 @@ func statePath() string {
 	return filepath.Join(stateDir(), "state.json")
 }
 
+// errNoSession is the one loadState failure a caller may read as nothing to
+// do. The others name a file that is there and still records a browser and a
+// helper: overwriting it orphans both.
+var errNoSession = errors.New("no browser session (run 'roddy start' first)")
+
 func loadState() (*State, error) {
-	data, err := os.ReadFile(statePath())
+	path := statePath()
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("no browser session (run 'roddy start' first)")
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, errNoSession
+		}
+		return nil, fmt.Errorf("cannot read state file %s: %w", path, err)
 	}
 	var s State
 	if err := json.Unmarshal(data, &s); err != nil {
-		return nil, fmt.Errorf("corrupt state file: %w", err)
+		return nil, fmt.Errorf("corrupt state file %s: %w", path, err)
 	}
 	return &s, nil
 }
@@ -169,20 +179,34 @@ func connectBrowser(s *State) (*rod.Browser, error) {
 	return connectBrowserTimeout(s, 0)
 }
 
-// connectBrowserTimeout is connectBrowser with a deadline (d<=0: none) on the
-// connect and on every call made with the returned browser. rod puts the
-// deadline on a Browser clone's context, which cdp's dial inside Connect
-// honours — a Chrome that accepts the TCP connection and never answers the
-// WebSocket upgrade hangs there otherwise.
+// connectBrowserTimeout is connectBrowser with a bound (d<=0: none) on
+// reaching the browser, and rod's own deadline on every call made with the
+// returned browser. The bound has to be roddy's: rod's Timeout reaches only
+// cdp's dial, and WebSocket.Connect then reads the upgrade response with
+// http.ReadResponse on the raw connection, setting no deadline — a Chrome that
+// accepts the connection and never answers the handshake hangs Connect
+// forever. The abandoned goroutine is parked in that read and nothing can
+// interrupt it; the process it leaks in is about to exit.
 func connectBrowserTimeout(s *State, d time.Duration) (*rod.Browser, error) {
 	browser := rod.New().ControlURL(s.DebugURL)
-	if d > 0 {
-		browser = browser.Timeout(d)
+	if d <= 0 {
+		if err := browser.Connect(); err != nil {
+			return nil, fmt.Errorf("failed to connect to browser (is it still running?): %w", err)
+		}
+		return browser, nil
 	}
-	if err := browser.Connect(); err != nil {
-		return nil, fmt.Errorf("failed to connect to browser (is it still running?): %w", err)
+	browser = browser.Timeout(d)
+	connected := make(chan error, 1)
+	go func() { connected <- browser.Connect() }()
+	select {
+	case err := <-connected:
+		if err != nil {
+			return nil, fmt.Errorf("failed to connect to browser (is it still running?): %w", err)
+		}
+		return browser, nil
+	case <-time.After(d):
+		return nil, fmt.Errorf("failed to connect to browser (is it still running?): no answer on the debug socket within %v", d)
 	}
-	return browser, nil
 }
 
 // getActivePage returns the currently active page
@@ -810,28 +834,43 @@ func startAttemptLauncher(base startLaunch, mode singleProcessMode, extensionsFr
 }
 
 const (
-	// retireConnectTimeout bounds retireSession's connect and its close: a
-	// wedged or SIGSTOPped Chrome accepts the TCP connection and never answers
-	// the WebSocket upgrade, hanging start silently, and one that answers the
-	// handshake can hang on close instead.
+	// retireConnectTimeout is the bound connectBrowserTimeout enforces itself
+	// (rod's own reaches only the dial) plus rod's deadline on the close that
+	// follows: a wedged or SIGSTOPped Chrome accepts the TCP connection and
+	// never answers the WebSocket upgrade, and one that answers the handshake
+	// can hang on close instead. stop takes the same bound — it is the recovery
+	// path a refused connect names.
 	retireConnectTimeout = 5 * time.Second
 	// retireExitTimeout bounds the wait for a signalled browser to let go of
-	// the profile the new launch wants. Outliving it fails that launch rather
-	// than hanging start.
+	// the profile the new launch wants. Outliving it keeps the session, which
+	// says so, rather than hanging.
 	retireExitTimeout = 3 * time.Second
 )
 
-// retireSession clears a recorded session out of a new start's way: the proxy
-// helper when its port still answers, the browser only when roddy launched it
-// (ChromePID==0 is a connect session — that browser is the user's). The state
+// signalAndConfirm SIGTERMs pid and reports whether it is confirmed out of the
+// process table within retireExitTimeout. A platform that cannot probe a PID
+// (Windows) has no evidence to the contrary, so it reports confirmed.
+func signalAndConfirm(pid int) bool {
+	signalPID(pid)
+	waitPIDGone(pid, retireExitTimeout)
+	gone, known := pidGone(pid)
+	return gone || !known
+}
+
+// retireSession clears a recorded session out of a new session's way: the
+// proxy helper when its port still answers, the browser only when roddy
+// launched it (ChromePID==0 is a connect session — that browser is the user's).
+// It reports whether the recorded browser is confirmed out of the way; false
+// means the state file was kept because it is not, which start ignores (its
+// launch dies on Chrome's own profile lock) and connect refuses on. The state
 // file goes only once the old browser is gone, so every fatal between here and
 // saveState leaves the user the session they had. What happened to it is
 // reported on w.
 //
-// On retireUnresponsive's no-evidence path the kept state still names the
-// proxy helper signalled here; that state is stale by definition, and stop
-// guards on the same port, so it reports that helper already gone.
-func retireSession(s *State, w io.Writer) {
+// On the paths that keep the state, it still names the proxy helper signalled
+// here; that state is stale by definition, and stop guards on the same port, so
+// it reports that helper already gone.
+func retireSession(s *State, w io.Writer) bool {
 	// Quietly, unlike stop: start's notes are about the browser. An old helper
 	// still holds a descriptor on proxy.log, which the new start truncates, and
 	// its later writes would punch holes in the log that start reports from:
@@ -841,41 +880,50 @@ func retireSession(s *State, w io.Writer) {
 	}
 	if s.ChromePID == 0 {
 		fmt.Fprintf(w, "note: replacing the connected session at %s; that browser stays running\n", debugHost(s.DebugURL))
-		return
+		return true
 	}
 	b, err := connectBrowserTimeout(s, retireConnectTimeout)
 	if err != nil {
-		retireUnresponsive(s, w)
-		return
+		return retireUnresponsive(s, w)
 	}
 	fmt.Fprintf(w, "note: stopping the previous Chrome (PID %d)\n", s.ChromePID)
 	// Fall back to the signal, as stop does: a failed close would otherwise
 	// leave Chrome running with the state that knows its PID about to go. The
 	// connect answered on this session's own per-launch DebugURL, so that PID
 	// is that Chrome and not one the system recycled.
-	if err := b.Close(); err != nil {
-		signalPID(s.ChromePID)
+	if err := b.Close(); err != nil && !signalAndConfirm(s.ChromePID) {
+		fmt.Fprintf(w, "note: previous Chrome (PID %d) has not exited within %v of SIGTERM; the session is kept\n", s.ChromePID, retireExitTimeout)
+		return false
 	}
 	removeState()
+	return true
 }
 
 // retireUnresponsive handles a browser that no longer answers its debug
 // socket. Killing it by the recorded PID alone would be a guess — across a
 // reboot that PID is whatever the system handed it next — so it takes
-// evidence: Chrome's own profile lock naming the same PID. Without evidence
-// nothing is signalled and the state stays (the old behaviour) for stop to
-// use; the launch below then dies on Chrome's own "Failed to create
-// <profile>/SingletonLock: File exists (17)" if that browser really is alive,
-// which the note at least explains.
-func retireUnresponsive(s *State, w io.Writer) {
+// evidence: the PID being gone already, or Chrome's own profile lock naming it.
+// Without evidence nothing is signalled and the state stays (the old
+// behaviour) for stop to use; a new start then dies on Chrome's own "Failed to
+// create <profile>/SingletonLock: File exists (17)" if that browser really is
+// alive, which the note at least explains.
+func retireUnresponsive(s *State, w io.Writer) bool {
+	if gone, known := pidGone(s.ChromePID); known && gone {
+		fmt.Fprintf(w, "note: previous Chrome (PID %d) is already gone\n", s.ChromePID)
+		removeState()
+		return true
+	}
 	if pid, ok := profileLockPID(s.DataDir); !ok || pid != s.ChromePID {
 		fmt.Fprintf(w, "note: previous Chrome (PID %d) is not answering on its debug socket; run 'roddy stop' to kill it if it is still running\n", s.ChromePID)
-		return
+		return false
 	}
 	fmt.Fprintf(w, "note: stopping the previous Chrome (PID %d), which was not answering on its debug socket\n", s.ChromePID)
-	signalPID(s.ChromePID)
-	waitPIDGone(s.ChromePID, retireExitTimeout)
+	if !signalAndConfirm(s.ChromePID) {
+		fmt.Fprintf(w, "note: previous Chrome (PID %d) has not exited within %v of SIGTERM; the session is kept\n", s.ChromePID, retireExitTimeout)
+		return false
+	}
 	removeState()
+	return true
 }
 
 // debugHost renders a state file's DebugURL as the host:port the user handed
@@ -915,9 +963,15 @@ func cmdStart(args []string) {
 		fatal("%s", err)
 	}
 
-	// Check if already running
-	if s, err := loadState(); err == nil {
+	// Check if already running. A state file that is there but unreadable still
+	// names a browser this cannot reach; the launch below has Chrome's own
+	// SingletonLock as its backstop, so say so and go on.
+	s, err := loadState()
+	switch {
+	case err == nil:
 		retireSession(s, os.Stderr)
+	case !errors.Is(err, errNoSession):
+		fmt.Fprintf(os.Stderr, "note: %v; nothing it named was stopped\n", err)
 	}
 
 	extensions := loadExtensions(opts.extensions)
@@ -1102,41 +1156,67 @@ func cmdExtensions(args []string) {
 	}
 }
 
-// sameBrowser reports whether two debug URLs name the same browser. Chrome
-// answers /json/version with the host the request carried, so the browser
-// roddy launched is "ws://127.0.0.1:PORT/..." in its own state file and
-// "ws://localhost:PORT/..." to `roddy connect localhost:PORT` — only the path,
-// /devtools/browser/<uuid>, identifies it. Unparseable or path-less URLs fall
-// back to the whole string.
+// devtoolsBrowserPrefix precedes the per-browser id in a debug URL's path.
+const devtoolsBrowserPrefix = "/devtools/browser/"
+
+// browserID returns a debug URL's /devtools/browser/<id> path, and whether the
+// URL carries one. A path with no id — "/", a bare "/devtools/browser"
+// (Android's discoverable delegates, fixed-path CDP frontends) — is not
+// identity, and neither is an unparseable URL.
+func browserID(debugURL string) (string, bool) {
+	u, err := url.Parse(debugURL)
+	if err != nil || !strings.HasPrefix(u.Path, devtoolsBrowserPrefix) || len(u.Path) == len(devtoolsBrowserPrefix) {
+		return "", false
+	}
+	return u.Path, true
+}
+
+// sameBrowser reports whether two debug URLs name the same browser. The host
+// is not identity: the launcher records the address Chrome bound (rod's
+// ResolveURL forces the host it queried into the URL Chrome printed), while
+// Chrome answers /json/version with the Host header it received, so `connect
+// localhost:PORT` names the browser roddy launched as "ws://localhost:PORT/…".
+// Only the /devtools/browser/<uuid> path identifies it. URLs without such a
+// path have no identity to compare, so the whole string decides.
 func sameBrowser(a, b string) bool {
 	if a == "" || b == "" {
 		return false
 	}
-	ua, errA := url.Parse(a)
-	ub, errB := url.Parse(b)
-	if errA != nil || errB != nil || ua.Path == "" || ub.Path == "" {
+	ida, okA := browserID(a)
+	idb, okB := browserID(b)
+	if !okA || !okB {
 		return a == b
 	}
-	return ua.Path == ub.Path
+	return ida == idb
 }
 
-// connectState decides the state a connect leaves behind. Attaching elsewhere
-// retires the recorded session exactly as start does — once the state file
-// names another browser, stop can never reach the old one, so a Chrome roddy
-// launched would be orphaned along with its proxy helper. Reconnecting to the
-// browser roddy already drives is the exception: retiring there would close the
-// very Chrome being attached to, so the recorded session is returned untouched
-// (cmdConnect saves nothing then). What happened goes to w.
-func connectState(old *State, debugURL string, w io.Writer) *State {
-	if old != nil {
-		if sameBrowser(old.DebugURL, debugURL) {
-			fmt.Fprintln(w, "note: already connected to this browser; session kept")
-			return old
-		}
-		retireSession(old, w)
+// connectState decides what a connect writes, with three outcomes: nil to save
+// nothing, a state to save, or an error that refuses the attach. Another
+// browser retires the recorded session exactly as start does — once the state
+// file names something else, stop can never reach the old one — and a browser
+// that could not be confirmed stopped refuses instead of orphaning it. The
+// browser roddy already drives is never retired: that would close the very
+// Chrome being attached to, or orphan its proxy helper. Reached at the address
+// already recorded it needs no write at all; reached at a new one (a tunnel, or
+// the localhost spelling) only its address changes. What happened goes to w.
+func connectState(old *State, debugURL string, w io.Writer) (*State, error) {
+	if old == nil {
+		return &State{DebugURL: debugURL}, nil
 	}
-	// ChromePID 0 signals that we don't own this browser (stop won't kill it).
-	return &State{DebugURL: debugURL, ChromePID: 0, ActivePage: 0}
+	if sameBrowser(old.DebugURL, debugURL) {
+		if old.DebugURL == debugURL {
+			fmt.Fprintln(w, "note: already connected to this browser; session kept")
+			return nil, nil
+		}
+		fmt.Fprintf(w, "note: already connected to this browser; recording it at %s\n", debugHost(debugURL))
+		moved := *old
+		moved.DebugURL = debugURL
+		return &moved, nil
+	}
+	if !retireSession(old, w) {
+		return nil, fmt.Errorf("previous Chrome (PID %d) could not be confirmed stopped; run 'roddy stop' or kill it, then connect again", old.ChromePID)
+	}
+	return &State{DebugURL: debugURL}, nil
 }
 
 func cmdConnect(args []string) {
@@ -1148,7 +1228,6 @@ func cmdConnect(args []string) {
 		fatal("argument must be host:port (e.g. localhost:9222): %s", hostport)
 	}
 
-	// Fetch the WebSocket debugger URL from Chrome's /json/version endpoint
 	resp, err := http.Get("http://" + hostport + "/json/version")
 	if err != nil {
 		fatal("could not reach browser at %s: %v", hostport, err)
@@ -1165,19 +1244,26 @@ func cmdConnect(args []string) {
 		fatal("unexpected response from browser at %s", hostport)
 	}
 
-	// Verify the connection works
 	browser := rod.New().ControlURL(info.WebSocketDebuggerURL)
 	if err := browser.Connect(); err != nil {
 		fatal("could not connect to browser: %v", err)
 	}
 
-	// Retired only now that the new browser has answered: a fatal above leaves
-	// the user the session they had. No session yet is not an error here.
-	old, _ := loadState()
-	// A kept session comes back as the very pointer loadState returned; saving
-	// it would rewrite a file connect decided nothing about.
-	if state := connectState(old, info.WebSocketDebuggerURL, os.Stderr); state != old {
-		if err := saveState(state); err != nil {
+	// The old session is touched only now that the new browser has answered:
+	// every fatal above leaves the user the session they had.
+	old, err := loadState()
+	switch {
+	case errors.Is(err, errNoSession):
+		old = nil
+	case err != nil:
+		fatal("%v; the session it names cannot be stopped from here — remove or fix that file, then connect again", err)
+	}
+	save, err := connectState(old, info.WebSocketDebuggerURL, os.Stderr)
+	if err != nil {
+		fatal("%s", err)
+	}
+	if save != nil {
+		if err := saveState(save); err != nil {
 			fatal("failed to save state: %v", err)
 		}
 	}
@@ -1207,7 +1293,9 @@ func cmdStop(args []string) {
 	if err != nil {
 		fatal("%v", err)
 	}
-	browser, err := connectBrowser(s)
+	// Bounded, unlike the other commands: stop is where a connect that refused
+	// to retire a wedged Chrome sends the user, so it must not hang on one.
+	browser, err := connectBrowserTimeout(s, retireConnectTimeout)
 	if err != nil {
 		// Try to kill by PID only if we launched the browser
 		signalPID(s.ChromePID)

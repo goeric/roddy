@@ -75,7 +75,9 @@ so you don't leave Chrome running. A second `start` replaces the session rather
 than reusing it: it stops a Chrome roddy launched (saying so) and, after a
 `connect`, drops the attachment and leaves that browser running. `connect`
 replaces the session the same way, once the new browser answers — except when
-it names the browser roddy already drives, which keeps the session as it is.
+it names the browser roddy already drives, which keeps the session as it is
+(saying so), and it refuses rather than replacing a session whose Chrome could
+not be confirmed stopped.
 
 ## Sessions: how roddy stays "any project"
 

@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -29,9 +31,34 @@ type sleepChild struct {
 
 func startSleepChild(t *testing.T) *sleepChild {
 	t.Helper()
-	cmd := exec.Command("sleep", "30")
+	return startChild(t, exec.Command("sleep", "30"))
+}
+
+// startStubbornChild stands in for a browser that will not take SIGTERM.
+// SIGSTOP is not that browser: Darwin runs a stopped process's default SIGTERM
+// action anyway (measured — it exited within 30ms). An ignored disposition
+// does survive execve, so the sleep itself ignores the signal and only the
+// cleanup's SIGKILL ends it. "ready" comes after the trap is installed: a
+// SIGTERM arriving before it lands on the shell's default action instead
+// (measured — the retire is only milliseconds behind the start).
+func startStubbornChild(t *testing.T) *sleepChild {
+	t.Helper()
+	cmd := exec.Command("sh", "-c", `trap "" TERM; echo ready; exec sleep 30`)
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatalf("stdout pipe: %v", err)
+	}
+	c := startChild(t, cmd)
+	if line, err := bufio.NewReader(out).ReadString('\n'); err != nil || strings.TrimSpace(line) != "ready" {
+		t.Fatalf("stand-in did not announce itself: %q, %v", line, err)
+	}
+	return c
+}
+
+func startChild(t *testing.T, cmd *exec.Cmd) *sleepChild {
+	t.Helper()
 	if err := cmd.Start(); err != nil {
-		t.Fatalf("start sleep: %v", err)
+		t.Fatalf("start %v: %v", cmd.Args, err)
 	}
 	c := &sleepChild{pid: cmd.Process.Pid, exited: make(chan struct{})}
 	go func() {
@@ -67,6 +94,16 @@ func (c *sleepChild) alive() bool {
 	}
 }
 
+// assertUnsignalled fails if c was signalled. A SIGTERM already sent lands well
+// inside the wait; it only rules out racing the check against the signal.
+func assertUnsignalled(t *testing.T, c *sleepChild) {
+	t.Helper()
+	time.Sleep(200 * time.Millisecond)
+	if !c.alive() {
+		t.Errorf("PID %d was signalled, want it left alone", c.pid)
+	}
+}
+
 // The old proxy helper has to go before the new start truncates the log it
 // still holds open.
 func TestRetireSession_SignalsALiveProxyHelper(t *testing.T) {
@@ -98,12 +135,7 @@ func TestRetireSession_LeavesAProxyHelperWhosePortIsDead(t *testing.T) {
 		ProxyPort: deadPort(t),
 	}, io.Discard)
 
-	// A SIGTERM already sent lands well inside this; the wait only rules out
-	// racing the check against the signal.
-	time.Sleep(200 * time.Millisecond)
-	if !stranger.alive() {
-		t.Errorf("PID %d was signalled although nothing answered on its port", stranger.pid)
-	}
+	assertUnsignalled(t, stranger)
 }
 
 // A Chrome roddy launched that stopped answering its debug socket still owns
@@ -155,20 +187,72 @@ func TestRetireSession_LeavesAnUnresponsiveChromeWithoutEvidence(t *testing.T) {
 			mustSaveState(t, s)
 
 			var notes bytes.Buffer
-			retireSession(s, &notes)
+			if retireSession(s, &notes) {
+				t.Error("retireSession = true, want false: nothing confirmed that browser gone")
+			}
 
 			want := fmt.Sprintf("note: previous Chrome (PID %d) is not answering on its debug socket; run 'roddy stop' to kill it if it is still running\n", stranger.pid)
 			if notes.String() != want {
 				t.Errorf("notes = %q, want %q", notes.String(), want)
 			}
-			time.Sleep(200 * time.Millisecond)
-			if !stranger.alive() {
-				t.Errorf("PID %d was signalled without evidence that it is the browser", stranger.pid)
-			}
+			assertUnsignalled(t, stranger)
 			if !stateFileExists() {
 				t.Error("state file removed, want the stale session kept for 'roddy stop'")
 			}
 		})
+	}
+}
+
+// A Chrome that ignores SIGTERM outlives the state file that names it, so the
+// record has to stay: nothing else could reach that browser again.
+func TestRetireSession_ReportsAChromeThatIgnoresSIGTERM(t *testing.T) {
+	t.Setenv("RODDY_HOME", t.TempDir())
+	dataDir := t.TempDir()
+	stubborn := startStubbornChild(t)
+	if err := os.Symlink(fmt.Sprintf("some-host-%d", stubborn.pid), filepath.Join(dataDir, "SingletonLock")); err != nil {
+		t.Fatalf("write lock: %v", err)
+	}
+	s := &State{DebugURL: deadDebugURL(t), ChromePID: stubborn.pid, DataDir: dataDir}
+	mustSaveState(t, s)
+
+	var notes bytes.Buffer
+	if retireSession(s, &notes) {
+		t.Error("retireSession = true, want false: the browser never exited")
+	}
+
+	if want := fmt.Sprintf("has not exited within %v of SIGTERM", retireExitTimeout); !strings.Contains(notes.String(), want) {
+		t.Errorf("notes = %q, want it to contain %q", notes.String(), want)
+	}
+	if !stateFileExists() {
+		t.Error("state file removed, want the session kept for 'roddy stop'")
+	}
+}
+
+// A recorded PID that has left the process table is evidence enough on its
+// own: the browser is gone, so the record it left behind may go too.
+func TestRetireSession_RemovesTheRecordOfAChromeAlreadyGone(t *testing.T) {
+	t.Setenv("RODDY_HOME", t.TempDir())
+	gone := startSleepChild(t)
+	signalPID(gone.pid)
+	gone.waitExit(t, 3*time.Second)
+	if pidAlive(gone.pid) {
+		t.Fatalf("PID %d reads alive although it was reaped", gone.pid)
+	}
+	// No lock at all: being gone is the only evidence this path has.
+	s := &State{DebugURL: deadDebugURL(t), ChromePID: gone.pid, DataDir: t.TempDir()}
+	mustSaveState(t, s)
+
+	var notes bytes.Buffer
+	if !retireSession(s, &notes) {
+		t.Error("retireSession = false, want true: that browser is already gone")
+	}
+
+	want := fmt.Sprintf("note: previous Chrome (PID %d) is already gone\n", gone.pid)
+	if notes.String() != want {
+		t.Errorf("notes = %q, want %q", notes.String(), want)
+	}
+	if stateFileExists() {
+		t.Error("state file kept, want the record of a browser that is gone removed")
 	}
 }
 
@@ -186,8 +270,11 @@ func TestConnectState_RetiresAProxiedConnectSession(t *testing.T) {
 	const debugURL = "ws://127.0.0.1:9333/devtools/browser/y"
 
 	var notes bytes.Buffer
-	got := connectState(old, debugURL, &notes)
+	save, err := connectState(old, debugURL, &notes)
 
+	if err != nil {
+		t.Fatalf("connectState = %v, want no error", err)
+	}
 	if err := helper.waitExit(t, 3*time.Second); err == nil || !strings.Contains(err.Error(), "signal: terminated") {
 		t.Errorf("helper exit = %v, want signal: terminated", err)
 	}
@@ -195,14 +282,43 @@ func TestConnectState_RetiresAProxiedConnectSession(t *testing.T) {
 	if notes.String() != want {
 		t.Errorf("notes = %q, want %q", notes.String(), want)
 	}
-	if got.DebugURL != debugURL || got.ChromePID != 0 || got.ProxyPID != 0 || got.ProxyPort != 0 {
-		t.Errorf("connectState = %+v, want a fresh connect session at %s", got, debugURL)
+	if save.DebugURL != debugURL || save.ChromePID != 0 || save.ProxyPID != 0 || save.ProxyPort != 0 {
+		t.Errorf("connectState = %+v, want a fresh connect session at %s", save, debugURL)
 	}
 }
 
-// Reconnecting to the browser roddy already drives must retire nothing: the
-// retire would close the very Chrome being attached to and drop the helper's
-// record with it.
+// The issue's headline scenario in one call: a proxied start, then a connect
+// somewhere else. Both the Chrome and the helper are roddy's to clear.
+func TestConnectState_ClosesAProxiedOwnedChrome(t *testing.T) {
+	l, old := retireFixture(t)
+	old.ChromePID = l.PID()
+	helper := startSleepChild(t)
+	old.ProxyPID, old.ProxyPort = helper.pid, livePort(t)
+	mustSaveState(t, old)
+	const debugURL = "ws://127.0.0.1:9333/devtools/browser/elsewhere"
+
+	var notes bytes.Buffer
+	save, err := connectState(old, debugURL, &notes)
+
+	if err != nil {
+		t.Fatalf("connectState = %v, want no error", err)
+	}
+	if err := helper.waitExit(t, 3*time.Second); err == nil || !strings.Contains(err.Error(), "signal: terminated") {
+		t.Errorf("helper exit = %v, want signal: terminated", err)
+	}
+	waitProcessGone(t, l.PID())
+	if browser, err := connectBrowser(old); err == nil {
+		_ = browser.Close()
+		t.Error("owned browser still answering after connect retired it")
+	}
+	if save.DebugURL != debugURL || save.ChromePID != 0 || save.ProxyPID != 0 || save.ProxyPort != 0 {
+		t.Errorf("connectState = %+v, want a fresh connect session at %s", save, debugURL)
+	}
+}
+
+// Reconnecting to the browser roddy already drives at the address already
+// recorded must retire nothing: the retire would close the very Chrome being
+// attached to and drop the helper's record with it.
 func TestConnectState_KeepsTheSessionForTheSameBrowser(t *testing.T) {
 	t.Setenv("RODDY_HOME", t.TempDir())
 	chrome, helper := startSleepChild(t), startSleepChild(t)
@@ -215,22 +331,85 @@ func TestConnectState_KeepsTheSessionForTheSameBrowser(t *testing.T) {
 	mustSaveState(t, old)
 
 	var notes bytes.Buffer
-	got := connectState(old, "ws://localhost:9222/devtools/browser/x", &notes)
+	save, err := connectState(old, old.DebugURL, &notes)
 
-	// A SIGTERM already sent lands well inside this; the wait only rules out
-	// racing the check against the signal.
-	time.Sleep(200 * time.Millisecond)
-	if !chrome.alive() {
-		t.Errorf("PID %d was signalled although connect named the browser roddy already drives", chrome.pid)
+	if err != nil {
+		t.Fatalf("connectState = %v, want no error", err)
 	}
-	if !helper.alive() {
-		t.Errorf("proxy helper PID %d was signalled although the session was kept", helper.pid)
+	if save != nil {
+		t.Errorf("connectState = %+v, want nil: there is nothing to write", save)
 	}
-	if got != old {
-		t.Errorf("connectState = %+v, want the recorded session %+v unchanged", got, old)
+	if want := "note: already connected to this browser; session kept\n"; notes.String() != want {
+		t.Errorf("notes = %q, want %q", notes.String(), want)
 	}
+	assertUnsignalled(t, chrome)
+	assertUnsignalled(t, helper)
 	if !stateFileExists() {
 		t.Error("state file removed, want the session kept")
+	}
+}
+
+// The same browser reached at a new address (a tunnel, or the localhost
+// spelling) is a re-address, not a replacement: everything the session knows
+// about that Chrome survives.
+func TestConnectState_RecordsTheSameBrowserAtANewAddress(t *testing.T) {
+	t.Setenv("RODDY_HOME", t.TempDir())
+	chrome, helper := startSleepChild(t), startSleepChild(t)
+	old := &State{
+		DebugURL:  "ws://127.0.0.1:9222/devtools/browser/x",
+		ChromePID: chrome.pid,
+		DataDir:   t.TempDir(),
+		ProxyPID:  helper.pid,
+		ProxyPort: livePort(t),
+	}
+	mustSaveState(t, old)
+	const debugURL = "ws://localhost:9222/devtools/browser/x"
+
+	var notes bytes.Buffer
+	save, err := connectState(old, debugURL, &notes)
+
+	if err != nil {
+		t.Fatalf("connectState = %v, want no error", err)
+	}
+	want := *old
+	want.DebugURL = debugURL
+	if save == nil || !reflect.DeepEqual(*save, want) {
+		t.Errorf("connectState = %+v, want %+v", save, want)
+	}
+	if got := fmt.Sprintf("note: already connected to this browser; recording it at %s\n", debugHost(debugURL)); notes.String() != got {
+		t.Errorf("notes = %q, want %q", notes.String(), got)
+	}
+	assertUnsignalled(t, chrome)
+	assertUnsignalled(t, helper)
+	if !stateFileExists() {
+		t.Error("state file removed, want the session kept for the caller to save")
+	}
+}
+
+// A browser that could not be confirmed stopped must not lose the state file
+// that names it: connect refuses instead, leaving 'roddy stop' a way back.
+func TestConnectState_RefusesWhenTheOldChromeCannotBeConfirmedStopped(t *testing.T) {
+	t.Setenv("RODDY_HOME", t.TempDir())
+	stranger := startSleepChild(t)
+	// No lock in the data dir: nothing ties that PID to a browser.
+	old := &State{DebugURL: deadDebugURL(t), ChromePID: stranger.pid, DataDir: t.TempDir()}
+	mustSaveState(t, old)
+
+	var notes bytes.Buffer
+	save, err := connectState(old, "ws://127.0.0.1:9333/devtools/browser/y", &notes)
+
+	if err == nil {
+		t.Fatal("connectState returned no error, want a refusal")
+	}
+	if want := fmt.Sprintf("previous Chrome (PID %d) could not be confirmed stopped", stranger.pid); !strings.Contains(err.Error(), want) {
+		t.Errorf("error = %v, want it to contain %q", err, want)
+	}
+	if save != nil {
+		t.Errorf("connectState = %+v, want nil: nothing may replace a session still in the way", save)
+	}
+	assertUnsignalled(t, stranger)
+	if !stateFileExists() {
+		t.Error("state file removed, want the session kept for 'roddy stop'")
 	}
 }
 

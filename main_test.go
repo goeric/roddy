@@ -2683,9 +2683,8 @@ func TestRetireSession_ClosesAnOwnedBrowser(t *testing.T) {
 
 // --- connectState ---
 
-// Chrome answers /json/version with the host the request used, so the same
-// browser is named "ws://localhost:PORT/..." to `connect localhost:PORT` and
-// "ws://127.0.0.1:PORT/..." to the launcher that started it.
+// Host spelling is not identity: the launcher and `connect localhost:PORT`
+// name one browser two ways; only the path decides.
 func TestSameBrowser(t *testing.T) {
 	const path = "/devtools/browser/54bd986d-983b-4c64-91c3-9e4cda9a90f0"
 	for _, tc := range []struct {
@@ -2696,9 +2695,15 @@ func TestSameBrowser(t *testing.T) {
 		{name: "identical", a: "ws://127.0.0.1:9222" + path, b: "ws://127.0.0.1:9222" + path, want: true},
 		{name: "host rewritten", a: "ws://127.0.0.1:9222" + path, b: "ws://localhost:9222" + path, want: true},
 		{name: "another browser", a: "ws://127.0.0.1:9222" + path, b: "ws://127.0.0.1:9223/devtools/browser/other", want: false},
+		{name: "restarted on the same port", a: "ws://127.0.0.1:9222" + path, b: "ws://127.0.0.1:9222/devtools/browser/2a3c0f1e-0000-4000-8000-000000000000"},
 		{name: "empty old", a: "", b: "ws://127.0.0.1:9222" + path},
 		{name: "unparseable", a: "ws://%zz", b: "ws://%zz", want: true},
 		{name: "unparseable pair differs", a: "ws://%zz", b: "ws://%yy"},
+		// A path that carries no id is not identity, so the whole string decides.
+		{name: "path-less identical", a: "ws://127.0.0.1:9222", b: "ws://127.0.0.1:9222", want: true},
+		{name: "path-less differ", a: "ws://127.0.0.1:9222", b: "ws://127.0.0.1:9223"},
+		{name: "bare /devtools/browser on two hosts", a: "ws://a:1/devtools/browser", b: "ws://b:2/devtools/browser"},
+		{name: "slash on two hosts", a: "ws://127.0.0.1:9222/", b: "ws://otherhost:1/"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := sameBrowser(tc.a, tc.b); got != tc.want {
@@ -2713,9 +2718,12 @@ func TestSameBrowser(t *testing.T) {
 func TestConnectState_WithNoPreviousSession(t *testing.T) {
 	const debugURL = "ws://127.0.0.1:9222/devtools/browser/new"
 	var notes bytes.Buffer
-	got := connectState(nil, debugURL, &notes)
-	if got.DebugURL != debugURL || got.ChromePID != 0 || got.ActivePage != 0 {
-		t.Errorf("connectState(nil) = %+v, want a fresh connect session at %s", got, debugURL)
+	save, err := connectState(nil, debugURL, &notes)
+	if err != nil {
+		t.Fatalf("connectState(nil) = %v, want no error", err)
+	}
+	if save.DebugURL != debugURL || save.ChromePID != 0 || save.ActivePage != 0 {
+		t.Errorf("connectState(nil) = %+v, want a fresh connect session at %s", save, debugURL)
 	}
 	if notes.Len() > 0 {
 		t.Errorf("notes = %q, want nothing when there was no session", notes.String())
@@ -2731,17 +2739,120 @@ func TestConnectState_ClosesAnOwnedChrome(t *testing.T) {
 	const debugURL = "ws://127.0.0.1:9333/devtools/browser/elsewhere"
 
 	var notes bytes.Buffer
-	got := connectState(s, debugURL, &notes)
+	save, err := connectState(s, debugURL, &notes)
 
+	if err != nil {
+		t.Fatalf("connectState = %v, want no error", err)
+	}
 	if want := fmt.Sprintf("note: stopping the previous Chrome (PID %d)\n", l.PID()); notes.String() != want {
 		t.Errorf("notes = %q, want %q", notes.String(), want)
 	}
 	waitProcessGone(t, l.PID())
-	if pidAlive(l.PID()) {
-		t.Errorf("Chrome (PID %d) still running after connect retired it", l.PID())
+	if browser, err := connectBrowser(s); err == nil {
+		_ = browser.Close()
+		t.Error("owned browser still answering after connect retired it")
 	}
-	if got.DebugURL != debugURL || got.ChromePID != 0 {
-		t.Errorf("connectState = %+v, want a fresh connect session at %s", got, debugURL)
+	if save.DebugURL != debugURL || save.ChromePID != 0 {
+		t.Errorf("connectState = %+v, want a fresh connect session at %s", save, debugURL)
+	}
+}
+
+// rod's cdp handshake reads the upgrade response with no deadline, so only
+// roddy's own timer ends a connect to a socket that accepts and stays silent.
+func TestConnectBrowserTimeout_BoundsTheHandshake(t *testing.T) {
+	ln := listenLoopback(t)
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		accepted <- conn
+	}()
+	t.Cleanup(func() {
+		_ = ln.Close()
+		select {
+		case conn := <-accepted:
+			_ = conn.Close()
+		default:
+		}
+	})
+
+	s := &State{DebugURL: "ws://" + ln.Addr().String() + "/devtools/browser/x"}
+	done := make(chan error, 1)
+	go func() {
+		_, err := connectBrowserTimeout(s, 500*time.Millisecond)
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("connectBrowserTimeout returned no error against a listener that never answers")
+		}
+		if !strings.Contains(err.Error(), "500ms") {
+			t.Errorf("error = %v, want it to name the 500ms bound", err)
+		}
+	case <-time.After(1500 * time.Millisecond):
+		t.Fatal("connectBrowserTimeout did not return within 1.5s of a 500ms bound")
+	}
+}
+
+// --- loadState ---
+
+// Only "there is no session" may be read as nothing to do: a state file that
+// cannot be read or parsed still names a browser and a helper nothing else can
+// reach.
+func TestLoadState_FailureClasses(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		write      func(t *testing.T, path string)
+		wantNoSess bool
+		wantText   string
+	}{
+		{
+			name:       "missing",
+			write:      func(t *testing.T, path string) {},
+			wantNoSess: true,
+			wantText:   "no browser session (run 'roddy start' first)",
+		},
+		{
+			name: "unreadable",
+			write: func(t *testing.T, path string) {
+				if err := os.Mkdir(path, 0755); err != nil {
+					t.Fatalf("mkdir %s: %v", path, err)
+				}
+			},
+			wantText: "cannot read state file ",
+		},
+		{
+			name: "corrupt",
+			write: func(t *testing.T, path string) {
+				if err := os.WriteFile(path, []byte(`{"debug_url"`), 0644); err != nil {
+					t.Fatalf("write %s: %v", path, err)
+				}
+			},
+			wantText: "corrupt state file ",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("RODDY_HOME", t.TempDir())
+			tc.write(t, statePath())
+
+			s, err := loadState()
+			if s != nil || err == nil {
+				t.Fatalf("loadState() = %+v, %v, want nil and an error", s, err)
+			}
+			if got := errors.Is(err, errNoSession); got != tc.wantNoSess {
+				t.Errorf("errors.Is(%v, errNoSession) = %v, want %v", err, got, tc.wantNoSess)
+			}
+			if !strings.Contains(err.Error(), tc.wantText) {
+				t.Errorf("loadState() error = %q, want it to contain %q", err, tc.wantText)
+			}
+			if !tc.wantNoSess && !strings.Contains(err.Error(), statePath()) {
+				t.Errorf("loadState() error = %q, want it to name %s", err, statePath())
+			}
+		})
 	}
 }
 
