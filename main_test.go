@@ -2305,6 +2305,26 @@ func deadUpstream(t *testing.T) string {
 	return addr
 }
 
+// deadPort returns a loopback port nothing listens on.
+func deadPort(t *testing.T) int {
+	t.Helper()
+	ln := listenLoopback(t)
+	port := ln.Addr().(*net.TCPAddr).Port
+	if err := ln.Close(); err != nil {
+		t.Fatalf("close listener: %v", err)
+	}
+	return port
+}
+
+// livePort returns a loopback port a listener answers on for the rest of the
+// test — what proxyHelperAlive reads as a helper still being there.
+func livePort(t *testing.T) int {
+	t.Helper()
+	ln := listenLoopback(t)
+	t.Cleanup(func() { _ = ln.Close() })
+	return ln.Addr().(*net.TCPAddr).Port
+}
+
 // Chrome renders every synthesized 502 as ERR_TUNNEL_CONNECTION_FAILED, and
 // open sends the user to proxy.log for the cause: an unlogged failure leaves
 // that log empty. The credential must not go with it.
@@ -2728,17 +2748,71 @@ func TestNavigationFailure_InsecureSessionGetsNoInsecureAdvice(t *testing.T) {
 	}
 }
 
-func TestNavigationFailure_TunnelFailureNamesTheProxyLog(t *testing.T) {
+// The only two Chrome reports the helper can be behind: the synthesized 502 on
+// a CONNECT, and Chrome failing to reach the helper's port at all.
+var proxyFailureTexts = []string{"net::ERR_TUNNEL_CONNECTION_FAILED", "net::ERR_PROXY_CONNECTION_FAILED"}
+
+// A helper still listening under its own PID cannot be the failure: the
+// upstream it dials is.
+func TestNavigationFailure_LiveHelperBlamesTheUpstream(t *testing.T) {
 	t.Setenv("RODDY_HOME", t.TempDir())
-	for _, text := range []string{"net::ERR_TUNNEL_CONNECTION_FAILED", "net::ERR_PROXY_CONNECTION_FAILED"} {
-		msg := navigationFailure(errors.New(text), &State{ChromePID: 4242, ProxyPID: 99, ProxyPort: 1234})
-		if !strings.Contains(msg, "upstream proxy") || !strings.Contains(msg, proxyLogPath()) {
-			t.Errorf("navigationFailure(%q) = %q, want the helper hint naming %s", text, msg, proxyLogPath())
+	port := livePort(t)
+	for _, text := range proxyFailureTexts {
+		// This process stands in for the helper: its own PID reads alive.
+		msg := navigationFailure(errors.New(text), &State{ChromePID: 4242, ProxyPID: os.Getpid(), ProxyPort: port})
+		if !strings.Contains(msg, "could not reach the upstream proxy") || !strings.Contains(msg, proxyLogPath()) {
+			t.Errorf("navigationFailure(%q) = %q, want the upstream hint naming %s", text, msg, proxyLogPath())
 		}
-		// No helper, no helper log to blame.
+	}
+}
+
+// The same two errors with the helper gone: the advice is a restart, not the
+// upstream.
+func TestNavigationFailure_DeadHelperSaysItIsGone(t *testing.T) {
+	t.Setenv("RODDY_HOME", t.TempDir())
+	port := deadPort(t)
+	for _, text := range proxyFailureTexts {
+		msg := navigationFailure(errors.New(text), &State{ChromePID: 4242, ProxyPID: 99, ProxyPort: port})
+		if !strings.Contains(msg, "no longer running") || !strings.Contains(msg, proxyLogPath()) {
+			t.Errorf("navigationFailure(%q) = %q, want the dead-helper hint naming %s", text, msg, proxyLogPath())
+		}
+		if !strings.Contains(msg, "roddy start replaces it") {
+			t.Errorf("navigationFailure(%q) = %q, want the restart advice", text, msg)
+		}
+		// start alone respawns the helper; stop first would only lose the session.
+		if strings.Contains(msg, "roddy stop") {
+			t.Errorf("navigationFailure(%q) = %q, want no stop in the advice", text, msg)
+		}
+	}
+}
+
+// No helper, no helper log to blame.
+func TestNavigationFailure_UnproxiedSessionGetsNoProxyHint(t *testing.T) {
+	t.Setenv("RODDY_HOME", t.TempDir())
+	for _, text := range proxyFailureTexts {
 		if got, want := navigationFailure(errors.New(text), ownSession), "navigation failed: "+text; got != want {
 			t.Errorf("navigationFailure(%q) without a proxy helper = %q, want %q", text, got, want)
 		}
+	}
+}
+
+// The helper hint belongs to those two errors alone: a proxied session that
+// cannot resolve a name has no proxy problem to report, and a certificate
+// error keeps its own advice and only that.
+func TestNavigationFailure_ProxiedSessionHintsOnlyProxyErrors(t *testing.T) {
+	t.Setenv("RODDY_HOME", t.TempDir())
+	s := &State{ChromePID: 4242, ProxyPID: 99, ProxyPort: deadPort(t)}
+	for _, text := range []string{"net::ERR_NAME_NOT_RESOLVED", "net::ERR_CONNECTION_REFUSED"} {
+		if got, want := navigationFailure(errors.New(text), s), "navigation failed: "+text; got != want {
+			t.Errorf("navigationFailure(%q) on a proxied session = %q, want %q", text, got, want)
+		}
+	}
+	msg := navigationFailure(errors.New("net::ERR_CERT_AUTHORITY_INVALID"), s)
+	if !strings.Contains(msg, "install its CA") {
+		t.Errorf("navigationFailure(cert) on a proxied session = %q, want the CA hint", msg)
+	}
+	if strings.Contains(msg, "proxy helper") {
+		t.Errorf("navigationFailure(cert) on a proxied session = %q, want no proxy-helper hint", msg)
 	}
 }
 
@@ -2983,6 +3057,36 @@ func TestStatusCurrent(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			if got := statusCurrent(c.title, c.url, c.unreachableURL, c.reason); got != c.want {
 				t.Errorf("statusCurrent(%q, %q, %q, %q) = %q, want %q", c.title, c.url, c.unreachableURL, c.reason, got, c.want)
+			}
+		})
+	}
+}
+
+// --- statusProxy ---
+
+func TestStatusProxy(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("RODDY_HOME", home)
+	proxied := &State{ProxyPID: 4242, ProxyPort: 51234}
+	gone := "Auth proxy: NOT running (PID 4242 recorded; its last output, if any, is in " + filepath.Join(home, "proxy.log") + ")"
+	for _, c := range []struct {
+		name                string
+		s                   *State
+		portAlive, pidAlive bool
+		want                string
+	}{
+		// Live evidence and still no line: the gate is statusProxy's own.
+		{name: "unproxied", s: &State{}, portAlive: true, pidAlive: true},
+		{name: "running", s: proxied, portAlive: true, pidAlive: true, want: "Auth proxy: running (PID 4242, port 51234)"},
+		{name: "squatter", s: proxied, portAlive: true, want: "Auth proxy: port 51234 answers but PID 4242 is gone — another process owns it; roddy start replaces the helper"},
+		// The port is the deciding evidence: a live PID that stopped listening
+		// is not serving Chrome either.
+		{name: "port dead, pid alive", s: proxied, pidAlive: true, want: gone},
+		{name: "both gone", s: proxied, want: gone},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got := statusProxy(c.s, c.portAlive, c.pidAlive); got != c.want {
+				t.Errorf("statusProxy(portAlive=%v, pidAlive=%v) = %q, want %q", c.portAlive, c.pidAlive, got, c.want)
 			}
 		})
 	}

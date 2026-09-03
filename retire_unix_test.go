@@ -53,7 +53,7 @@ func (c *sleepChild) waitExit(t *testing.T, d time.Duration) error {
 	case <-c.exited:
 		return c.err
 	case <-time.After(d):
-		t.Fatalf("PID %d still running %v after retireSession", c.pid, d)
+		t.Fatalf("PID %d still running %v after it was signalled", c.pid, d)
 		return nil
 	}
 }
@@ -104,17 +104,6 @@ func TestRetireSession_LeavesAProxyHelperWhosePortIsDead(t *testing.T) {
 	if !stranger.alive() {
 		t.Errorf("PID %d was signalled although nothing answered on its port", stranger.pid)
 	}
-}
-
-// deadPort returns a loopback port nothing listens on.
-func deadPort(t *testing.T) int {
-	t.Helper()
-	ln := listenLoopback(t)
-	port := ln.Addr().(*net.TCPAddr).Port
-	if err := ln.Close(); err != nil {
-		t.Fatalf("close listener: %v", err)
-	}
-	return port
 }
 
 // A Chrome roddy launched that stopped answering its debug socket still owns

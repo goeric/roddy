@@ -40,6 +40,13 @@ func profileLockPID(dataDir string) (int, bool) {
 	return pid, true
 }
 
+// proxyPIDAlive reports whether the recorded proxy helper PID is still in the
+// process table — the half of status's evidence that separates a helper from
+// another process holding its port.
+func proxyPIDAlive(pid int) bool {
+	return pidAlive(pid)
+}
+
 // waitPIDGone blocks until pid leaves the process table, up to d; a pid that
 // outlives d just returns.
 func waitPIDGone(pid int, d time.Duration) {

@@ -768,6 +768,8 @@ This is necessary because Chrome cannot natively authenticate to proxies during 
 
 `start` waits for that local proxy to report the port it bound; if the helper exits first or never reports one, `start` stops it and fails (exit 2) with the helper's own output in the error message. That output also lands in `proxy.log` under the state directory (`~/.roddy/`, or `./.roddy/` with `--local`), overwritten on each `start`.
 
+For a proxied session `status` also reports the helper: `Auth proxy: running (PID N, port P)`, or `Auth proxy: NOT running (PID N recorded; its last output, if any, is in ~/.roddy/proxy.log)` once it has died — and `Auth proxy: port P answers but PID N is gone — another process owns it; roddy start replaces the helper` when something else has taken the port it left. `open` (and `newpage`, `back`, `forward`, `reload`, `waitload`) draws the same distinction when Chrome reports `net::ERR_TUNNEL_CONNECTION_FAILED` or `net::ERR_PROXY_CONNECTION_FAILED`: "the proxy helper could not reach the upstream proxy — see proxy.log" while it runs, "the proxy helper is no longer running … roddy start replaces it" once it is gone. Plain `http://` requests through a running helper whose upstream is down render the helper's own 502 as a page instead, with no error.
+
 ### Certificate errors behind a proxy
 
 The local helper is a transparent CONNECT tunnel: it never terminates TLS, so it originates no certificate error. A `net::ERR_CERT_*` behind a proxy is the target's own certificate or an upstream proxy that inspects TLS and re-signs with its own CA. `start` keeps certificate validation on that path, and `open` (and `newpage`, `back`, `forward`, `reload`, `waitload`) names both fixes when it hits one:
