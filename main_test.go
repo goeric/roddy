@@ -1924,19 +1924,24 @@ func waitURLs(list func() []string) []string {
 	}
 }
 
-// waitProcessGone blocks until pid is gone, up to ~3s. rod's launcher runs its
-// own cmd.Wait, so a second Wait here would lose the race and return
+// alivePID reports whether pid is still in the process table. rod's launcher
+// runs its own cmd.Wait, so a Wait here would lose the race and return
 // immediately; signal 0 asks instead of reaping. On Windows Signal fails on
-// the first call, which just ends the poll.
+// the first call, which reads as gone.
+func alivePID(pid int) bool {
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	return proc.Signal(syscall.Signal(0)) == nil
+}
+
+// waitProcessGone blocks until pid is gone, up to ~3s.
 func waitProcessGone(t testing.TB, pid int) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		proc, err := os.FindProcess(pid)
-		if err != nil {
-			return
-		}
-		if err := proc.Signal(syscall.Signal(0)); err != nil {
+		if !alivePID(pid) {
 			return
 		}
 		time.Sleep(25 * time.Millisecond)
@@ -2540,37 +2545,60 @@ func launcherPage(t *testing.T, l *launcher.Launcher) (*rod.Page, func()) {
 // --- retireSession ---
 
 // retireFixture launches the Chrome a retireSession test hands to a State and
-// returns its debug URL. RODDY_HOME keeps removeState inside the test's temp
-// dir; teardown runs on every path, including the one where retireSession
-// already closed the browser (Kill on a dead process is a no-op).
-func retireFixture(t *testing.T) (*launcher.Launcher, string) {
+// returns the launcher plus a State naming it — DebugURL and DataDir filled,
+// ChromePID left to the caller, since that field is what makes the session
+// owned or connected. RODDY_HOME keeps saveState inside the test's temp dir.
+// Teardown runs on every path, including the ones where retireSession already
+// stopped the browser; it mirrors launcherPage in reaching for Kill only when
+// the polite close fails, because Kill sleeps a second unconditionally.
+func retireFixture(t *testing.T) (*launcher.Launcher, *State) {
 	t.Helper()
 	t.Setenv("RODDY_HOME", t.TempDir())
-	l := newStartLauncher(startLaunch{dataDir: t.TempDir(), headless: true, unsandboxed: true})
+	dataDir := t.TempDir()
+	l := newStartLauncher(startLaunch{dataDir: dataDir, headless: true, unsandboxed: true})
 	u, err := l.Launch()
 	if err != nil {
 		t.Fatalf("launch: %v", err)
 	}
 	t.Cleanup(func() {
-		l.Kill()
+		b := rod.New().ControlURL(u)
+		closed := b.Connect() == nil && b.Close() == nil
+		if !closed && alivePID(l.PID()) {
+			l.Kill()
+		}
 		waitProcessGone(t, l.PID())
 	})
-	return l, u
+	return l, &State{DebugURL: u, DataDir: dataDir}
 }
 
-// ChromePID 0 is a connect session: start drops the state file but must leave
-// the user's own Chrome running, as stop does.
+// deadDebugURL is a debug socket nothing answers on, for the sessions whose
+// browser has stopped talking.
+func deadDebugURL(t *testing.T) string {
+	t.Helper()
+	return "ws://" + deadUpstream(t) + "/devtools/browser/gone"
+}
+
+// ChromePID 0 is a connect session: start says it is taking the session over
+// but must leave the user's own Chrome running, as stop does. The state file
+// stays too — every fatal between here and the new saveState would otherwise
+// leave the user with no session at all and that browser still up.
 func TestRetireSession_LeavesAConnectSessionsBrowserRunning(t *testing.T) {
-	_, u := retireFixture(t)
-	s := &State{DebugURL: u}
+	_, s := retireFixture(t)
 	if err := saveState(s); err != nil {
 		t.Fatalf("save state: %v", err)
 	}
 
-	retireSession(s)
+	var notes bytes.Buffer
+	retireSession(s, &notes)
 
-	if _, err := os.Stat(statePath()); !os.IsNotExist(err) {
-		t.Errorf("stat state file = %v, want it removed", err)
+	if _, err := os.Stat(statePath()); err != nil {
+		t.Errorf("stat state file = %v, want it kept until the new start saves", err)
+	}
+	if want := "note: replacing the connected session at " + debugHost(s.DebugURL); !strings.Contains(notes.String(), want) {
+		t.Errorf("notes = %q, want it to contain %q", notes.String(), want)
+	}
+	if want := "that browser stays running"; !strings.Contains(notes.String(), want) {
+		t.Errorf("notes = %q, want it to contain %q", notes.String(), want)
 	}
 	browser, err := connectBrowser(s)
 	if err != nil {
@@ -2594,16 +2622,21 @@ func TestRetireSession_LeavesAConnectSessionsBrowserRunning(t *testing.T) {
 	}
 }
 
-// The browser roddy launched itself is the one start closes.
+// The browser roddy launched itself is the one start closes, and start says so.
 func TestRetireSession_ClosesAnOwnedBrowser(t *testing.T) {
-	l, u := retireFixture(t)
-	s := &State{DebugURL: u, ChromePID: l.PID()}
+	l, s := retireFixture(t)
+	s.ChromePID = l.PID()
 	if err := saveState(s); err != nil {
 		t.Fatalf("save state: %v", err)
 	}
 
-	retireSession(s)
+	var notes bytes.Buffer
+	retireSession(s, &notes)
 
+	want := fmt.Sprintf("note: stopping the previous Chrome (PID %d)\n", l.PID())
+	if notes.String() != want {
+		t.Errorf("notes = %q, want %q", notes.String(), want)
+	}
 	waitProcessGone(t, l.PID())
 	if browser, err := connectBrowser(s); err == nil {
 		_ = browser.Close()
