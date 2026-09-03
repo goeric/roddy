@@ -1186,6 +1186,16 @@ func statusCurrent(title, url, unreachableURL, reason string) string {
 	return fmt.Sprintf("Chrome error page for %s (%s)", unreachableURL, reason)
 }
 
+// statusProxy formats status's auth-proxy line. A helper that died after start
+// leaves no symptom but Chrome's ERR_TUNNEL_CONNECTION_FAILED on every
+// navigation, so status names its state and where its log is.
+func statusProxy(s *State, alive bool) string {
+	if alive {
+		return fmt.Sprintf("Auth proxy: running (PID %d, port %d)", s.ProxyPID, s.ProxyPort)
+	}
+	return fmt.Sprintf("Auth proxy: NOT running (PID %d recorded; see %s)", s.ProxyPID, proxyLogPath())
+}
+
 func cmdStatus(args []string) {
 	s, err := loadState()
 	if err != nil {
@@ -1204,6 +1214,9 @@ func cmdStatus(args []string) {
 	fmt.Printf("Active page: %d\n", s.ActivePage)
 	if notes := sessionFlagNotes(s); notes != "" {
 		fmt.Printf("Session: %s\n", notes)
+	}
+	if s.ProxyPort > 0 {
+		fmt.Println(statusProxy(s, proxyHelperAlive(s.ProxyPort)))
 	}
 	for _, ext := range s.Extensions {
 		fmt.Printf("Extension: %s (%s)\n", ext.Name, ext.ID)
@@ -1273,9 +1286,17 @@ func navigationFailure(err error, s *State) string {
 			msg += "; for a self-signed or TLS-inspecting-proxy certificate, install its CA for Chrome or restart with `roddy start --insecure`"
 		}
 	}
-	if s.ProxyPID > 0 && (strings.Contains(msg, "ERR_TUNNEL_CONNECTION_FAILED") ||
+	// Keyed on the port, not the PID: cmdStart saves both or neither (it
+	// fatals before saveState if the helper never announces a port), and the
+	// port is what liveness needs. A helper that is gone gets the opposite
+	// advice from one that is running but cannot reach upstream.
+	if s.ProxyPort > 0 && (strings.Contains(msg, "ERR_TUNNEL_CONNECTION_FAILED") ||
 		strings.Contains(msg, "ERR_PROXY_CONNECTION_FAILED")) {
-		msg += "; the proxy helper could not reach the upstream proxy — see " + proxyLogPath()
+		if proxyHelperAlive(s.ProxyPort) {
+			msg += "; the proxy helper could not reach the upstream proxy — see " + proxyLogPath()
+		} else {
+			msg += "; the proxy helper is no longer running — see " + proxyLogPath() + ", then roddy stop and roddy start"
+		}
 	}
 	return msg
 }

@@ -106,17 +106,6 @@ func TestRetireSession_LeavesAProxyHelperWhosePortIsDead(t *testing.T) {
 	}
 }
 
-// deadPort returns a loopback port nothing listens on.
-func deadPort(t *testing.T) int {
-	t.Helper()
-	ln := listenLoopback(t)
-	port := ln.Addr().(*net.TCPAddr).Port
-	if err := ln.Close(); err != nil {
-		t.Fatalf("close listener: %v", err)
-	}
-	return port
-}
-
 // A Chrome roddy launched that stopped answering its debug socket still owns
 // the profile the new launch wants: with its own lock as evidence, stop it.
 func TestRetireSession_StopsAnUnresponsiveOwnedChrome(t *testing.T) {
