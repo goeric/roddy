@@ -69,8 +69,9 @@ roddy stop               # shut it down
 ```
 
 Start once at the beginning of a debugging session and `stop` when you're done
-so you don't leave Chrome running. If `start` reports it's already running,
-that's fine — reuse it.
+so you don't leave Chrome running. A second `start` replaces the session rather
+than reusing it: it stops a Chrome roddy launched (saying so) and, after a
+`connect`, drops the attachment and leaves that browser running.
 
 ## Sessions: how roddy stays "any project"
 
