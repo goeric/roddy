@@ -37,6 +37,11 @@ rod v0.116.2:
   callbacks run synchronously inside wait(), so `wait(); close(ch)` in one
   goroutine guarantees no send-after-close. goob's event pipe is unbounded —
   a slow consumer never stalls rod's CDP reader.
+- `Browser.Timeout(d).Connect()` bounds only the TCP dial: cdp's
+  `WebSocket.Connect` passes ctx to `DialContext`, then reads the upgrade with
+  `http.ReadResponse` on the raw conn and sets no deadline — a Chrome that
+  accepts and never answers hangs Connect forever (suite). roddy races Connect
+  against its own timer.
 - `Page.Eval` CALLS a function literal; raw `Runtime.evaluate` does not — wrap
   expressions in an IIFE `(() => { return (expr); })()` or `{a: 1}` parses as a
   labelled block.
