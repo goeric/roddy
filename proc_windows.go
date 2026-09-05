@@ -25,6 +25,13 @@ func proxyPIDAlive(pid int) bool {
 	return true
 }
 
+// pidGone has nothing to ask with on Windows — pidAlive reads every PID there
+// as gone — so it never answers, and a browser is never retired on that
+// evidence alone.
+func pidGone(pid int) (gone, known bool) {
+	return false, false
+}
+
 // waitPIDGone is only reached behind profileLockPID's evidence, which this
 // platform never has.
 func waitPIDGone(pid int, d time.Duration) {}
