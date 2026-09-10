@@ -72,42 +72,60 @@ Then restart Claude Code. Update later with `/plugin update roddy`.
 
 ### Codex
 
-In a Codex session, ask its built-in installer for the skill:
+Install it as a plugin, the same way: Codex reads this repo's plugin manifest
+and marketplace as its own.
+
+```bash
+codex plugin marketplace add goeric/roddy
+codex plugin add roddy@roddy
+```
+
+The skill is available in your next Codex thread. To update, refresh the
+marketplace snapshot and install again; `codex plugin remove roddy@roddy`
+uninstalls it.
+
+```bash
+codex plugin marketplace upgrade roddy
+codex plugin add roddy@roddy
+```
+
+<details>
+<summary>Installing the skill without a plugin</summary>
+
+The skill is a single self-contained directory (`skills/roddy`), so it can also
+go in on its own. In a Codex session, its built-in installer copies it into
+`~/.codex/skills/roddy` (it refuses if that directory already exists, so delete
+it to update):
 
 ```
 $skill-installer https://github.com/goeric/roddy/tree/main/skills/roddy
 ```
 
-That copies it into `~/.codex/skills/roddy`, and it is available on the next
-turn. Or use the cross-agent [`skills`](https://github.com/vercel-labs/skills)
-CLI from a shell:
+The cross-agent [`skills`](https://github.com/vercel-labs/skills) CLI installs
+it under `~/.agents/skills` and links it into Codex, and `npx skills update
+roddy` updates it. Keep `-a codex` if the Claude Code plugin is also
+installed — without it the CLI offers every agent it detects (all of them under
+`-y`), and a second `roddy` under `~/.claude/skills` would load alongside the
+plugin's:
 
 ```bash
 npx skills add goeric/roddy -a codex -g
 ```
 
-That installs it under `~/.agents/skills` and links it into Codex;
-`npx skills update roddy` brings it up to date later. Keep `-a codex` if the
-Claude Code plugin is also installed — without it the CLI links the skill into
-`~/.claude/skills` too, and two skills named `roddy` will both load and
-conflict.
-
-<details>
-<summary>Installing the skill without an installer</summary>
-
-The skill is a single self-contained directory, so you can also symlink it into
-a personal skills directory:
+Or symlink a checkout into a personal skills directory:
 
 ```bash
 git clone https://github.com/goeric/roddy.git
+mkdir -p ~/.codex/skills
 ln -s "$PWD/roddy/skills/roddy" ~/.codex/skills/roddy      # Codex
 mkdir -p ~/.claude/skills
 ln -s "$PWD/roddy/skills/roddy" ~/.claude/skills/roddy     # Claude Code
 ```
 
-Restart Claude Code afterwards; Codex follows the symlink on its next turn. Use
-one method per agent, not two — two skills named `roddy` will both load and
-conflict.
+Restart Claude Code afterwards; Codex picks the skill up on its next turn
+(restart it if not). Use one method per agent, not two: in Claude Code two
+skills named `roddy` both load and conflict, and in Codex the plugin's copy
+loads alongside one in `~/.codex/skills`.
 
 </details>
 

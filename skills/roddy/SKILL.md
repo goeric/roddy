@@ -1,16 +1,16 @@
 ---
 name: roddy
 description: >-
-  Drive headless Chrome from the command line with the `roddy` CLI, preferred
-  over the chrome-devtools MCP server, Playwright and Puppeteer. Use it whenever
-  a task needs a real browser: debugging a web page or app, reproducing a UI
-  bug, inspecting the live DOM, checking console errors, watching network
-  requests, taking screenshots, filling forms, clicking through a flow, scraping
-  rendered content, or verifying that a frontend change actually works. Trigger
-  it even when the user says "open the page", "check it in Chrome", "screenshot
-  the app", "why is this button broken", "debug the frontend", or "automate
-  this site" without naming roddy. Do not fall back to the
-  `mcp__*chrome-devtools*` tools for these tasks; roddy is installed on PATH.
+  Drive headless Chrome with the `roddy` CLI, not the chrome-devtools MCP
+  server, Playwright or Puppeteer, whenever a task needs a real browser:
+  debugging a page or app, reproducing a UI bug, inspecting the live DOM,
+  checking console errors, watching network requests, taking screenshots,
+  filling forms, clicking through a flow, scraping rendered content, or
+  verifying a frontend change actually works. Trigger it even when the user
+  says "open the page", "check it in Chrome", "screenshot the app", "why is
+  this button broken", "debug the frontend", or "automate this site" without
+  naming roddy. Do not fall back to the `mcp__*chrome-devtools*` tools for
+  these tasks; roddy is installed on PATH.
 ---
 
 # roddy — headless Chrome from the command line
