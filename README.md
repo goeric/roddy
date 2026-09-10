@@ -45,13 +45,21 @@ Requires:
 - Go 1.21+
 - Google Chrome or Chromium installed (or set `ROD_CHROME_BIN=/path/to/chrome`)
 
-## Claude Code skill
+## Agent skill for Claude Code and Codex
 
-This repo ships a [Claude Code](https://claude.com/claude-code) skill that
-teaches Claude to reach for Roddy — instead of Playwright, Puppeteer, or the
-Chrome DevTools MCP server — whenever a task needs a real browser: reproducing a
-UI bug, inspecting the live DOM, reading console errors, filling a form, or
-screenshotting a page.
+This repo ships an agent skill (`skills/roddy/SKILL.md`) that teaches
+[Claude Code](https://claude.com/claude-code) and
+[Codex](https://developers.openai.com/codex) to reach for Roddy — instead of
+Playwright, Puppeteer, or the Chrome DevTools MCP server — whenever a task needs
+a real browser: reproducing a UI bug, inspecting the live DOM, reading console
+errors, filling a form, or screenshotting a page.
+
+The skill documents the CLI, not just its existence — session lifecycle, the
+check commands and their exit codes, extension loading, and the failure modes
+worth recognising. It assumes `roddy` is on `PATH`, so install the binary first.
+It triggers on its own; you don't need to name it.
+
+### Claude Code
 
 Install it as a plugin:
 
@@ -60,27 +68,46 @@ Install it as a plugin:
 /plugin install roddy@roddy
 ```
 
-Then restart Claude Code. The skill triggers on its own; you don't need to name
-it. Update later with `/plugin update roddy`.
+Then restart Claude Code. Update later with `/plugin update roddy`.
 
-The skill documents the CLI, not just its existence — session lifecycle, the
-check commands and their exit codes, extension loading, and the failure modes
-worth recognising. It assumes `roddy` is on `PATH`, so install the binary first.
+### Codex
+
+In a Codex session, ask its built-in installer for the skill:
+
+```
+$skill-installer https://github.com/goeric/roddy/tree/main/skills/roddy
+```
+
+That copies it into `~/.codex/skills/roddy`, and it is available on the next
+turn. Or use the cross-agent [`skills`](https://github.com/vercel-labs/skills)
+CLI from a shell:
+
+```bash
+npx skills add goeric/roddy -a codex -g
+```
+
+That installs it under `~/.agents/skills` and links it into Codex;
+`npx skills update roddy` brings it up to date later. Keep `-a codex` if the
+Claude Code plugin is also installed — without it the CLI links the skill into
+`~/.claude/skills` too, and two skills named `roddy` will both load and
+conflict.
 
 <details>
-<summary>Installing the skill without plugins</summary>
+<summary>Installing the skill without an installer</summary>
 
-The skill is a single self-contained file, so you can also symlink it into your
-personal skills directory:
+The skill is a single self-contained directory, so you can also symlink it into
+a personal skills directory:
 
 ```bash
 git clone https://github.com/goeric/roddy.git
+ln -s "$PWD/roddy/skills/roddy" ~/.codex/skills/roddy      # Codex
 mkdir -p ~/.claude/skills
-ln -s "$PWD/roddy/skills/roddy" ~/.claude/skills/roddy
+ln -s "$PWD/roddy/skills/roddy" ~/.claude/skills/roddy     # Claude Code
 ```
 
-Restart Claude Code afterwards. Use one method or the other, not both — two
-skills named `roddy` will both load and conflict.
+Restart Claude Code afterwards; Codex follows the symlink on its next turn. Use
+one method per agent, not two — two skills named `roddy` will both load and
+conflict.
 
 </details>
 
