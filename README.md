@@ -80,22 +80,18 @@ codex plugin marketplace add goeric/roddy
 codex plugin add roddy@roddy
 ```
 
-The skill is available in your next Codex thread. To update, refresh the
-marketplace snapshot and install again; `codex plugin remove roddy@roddy`
-uninstalls it.
-
-```bash
-codex plugin marketplace upgrade roddy
-codex plugin add roddy@roddy
-```
+The skill is available in your next Codex session. Update later with
+`codex plugin marketplace upgrade roddy`, which refetches the snapshot and
+reinstalls at the new version; `codex plugin remove roddy@roddy` uninstalls
+it, and `codex plugin marketplace remove roddy` drops the marketplace too.
 
 <details>
 <summary>Installing the skill without a plugin</summary>
 
 The skill is a single self-contained directory (`skills/roddy`), so it can also
 go in on its own. In a Codex session, its built-in installer copies it into
-`~/.codex/skills/roddy` (it refuses if that directory already exists, so delete
-it to update):
+`~/.codex/skills/roddy` (it aborts with `Destination already exists` if the
+directory is there; delete it to update):
 
 ```
 $skill-installer https://github.com/goeric/roddy/tree/main/skills/roddy
@@ -123,9 +119,9 @@ ln -s "$PWD/roddy/skills/roddy" ~/.claude/skills/roddy     # Claude Code
 ```
 
 Restart Claude Code afterwards; Codex picks the skill up on its next turn
-(restart it if not). Use one method per agent, not two: in Claude Code two
-skills named `roddy` both load and conflict, and in Codex the plugin's copy
-loads alongside one in `~/.codex/skills`.
+(restart it if not). Use one method per agent, not two: both agents load every
+copy they find, so two `roddy` skills compete (Codex lists both as
+`roddy:roddy`).
 
 </details>
 
