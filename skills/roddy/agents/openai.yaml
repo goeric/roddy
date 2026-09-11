@@ -1,0 +1,3 @@
+interface:
+  display_name: "roddy"
+  short_description: "Drive headless Chrome from the command line"

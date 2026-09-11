@@ -45,13 +45,21 @@ Requires:
 - Go 1.21+
 - Google Chrome or Chromium installed (or set `ROD_CHROME_BIN=/path/to/chrome`)
 
-## Claude Code skill
+## Agent skill for Claude Code and Codex
 
-This repo ships a [Claude Code](https://claude.com/claude-code) skill that
-teaches Claude to reach for Roddy — instead of Playwright, Puppeteer, or the
-Chrome DevTools MCP server — whenever a task needs a real browser: reproducing a
-UI bug, inspecting the live DOM, reading console errors, filling a form, or
-screenshotting a page.
+This repo ships an agent skill (`skills/roddy/SKILL.md`) that teaches
+[Claude Code](https://claude.com/claude-code) and
+[Codex](https://developers.openai.com/codex) to reach for Roddy — instead of
+Playwright, Puppeteer, or the Chrome DevTools MCP server — whenever a task needs
+a real browser: reproducing a UI bug, inspecting the live DOM, reading console
+errors, filling a form, or screenshotting a page.
+
+The skill documents the CLI, not just its existence — session lifecycle, the
+check commands and their exit codes, extension loading, and the failure modes
+worth recognising. It assumes `roddy` is on `PATH`, so install the binary first.
+It triggers on its own; you don't need to name it.
+
+### Claude Code
 
 Install it as a plugin:
 
@@ -60,27 +68,60 @@ Install it as a plugin:
 /plugin install roddy@roddy
 ```
 
-Then restart Claude Code. The skill triggers on its own; you don't need to name
-it. Update later with `/plugin update roddy`.
+Then restart Claude Code. Update later with `/plugin update roddy`.
 
-The skill documents the CLI, not just its existence — session lifecycle, the
-check commands and their exit codes, extension loading, and the failure modes
-worth recognising. It assumes `roddy` is on `PATH`, so install the binary first.
+### Codex
+
+Install it as a plugin, the same way: Codex reads this repo's plugin manifest
+and marketplace as its own.
+
+```bash
+codex plugin marketplace add goeric/roddy
+codex plugin add roddy@roddy
+```
+
+The skill is available in your next Codex session. Update later with
+`codex plugin marketplace upgrade roddy`, which refetches the snapshot and
+reinstalls at the new version; `codex plugin remove roddy@roddy` uninstalls
+it, and `codex plugin marketplace remove roddy` drops the marketplace too.
 
 <details>
-<summary>Installing the skill without plugins</summary>
+<summary>Installing the skill without a plugin</summary>
 
-The skill is a single self-contained file, so you can also symlink it into your
-personal skills directory:
+The skill is a single self-contained directory (`skills/roddy`), so it can also
+go in on its own. In a Codex session, its built-in installer copies it into
+`~/.codex/skills/roddy` (it aborts with `Destination already exists` if the
+directory is there; delete it to update):
+
+```
+$skill-installer https://github.com/goeric/roddy/tree/main/skills/roddy
+```
+
+The cross-agent [`skills`](https://github.com/vercel-labs/skills) CLI installs
+it under `~/.agents/skills` and links it into Codex, and `npx skills update
+roddy` updates it. Keep `-a codex` if the Claude Code plugin is also
+installed — without it the CLI offers every agent it detects (all of them under
+`-y`), and a second `roddy` under `~/.claude/skills` would load alongside the
+plugin's:
+
+```bash
+npx skills add goeric/roddy -a codex -g
+```
+
+Or symlink a checkout into a personal skills directory:
 
 ```bash
 git clone https://github.com/goeric/roddy.git
+mkdir -p ~/.codex/skills
+ln -s "$PWD/roddy/skills/roddy" ~/.codex/skills/roddy      # Codex
 mkdir -p ~/.claude/skills
-ln -s "$PWD/roddy/skills/roddy" ~/.claude/skills/roddy
+ln -s "$PWD/roddy/skills/roddy" ~/.claude/skills/roddy     # Claude Code
 ```
 
-Restart Claude Code afterwards. Use one method or the other, not both — two
-skills named `roddy` will both load and conflict.
+Restart Claude Code afterwards; Codex picks the skill up on its next turn
+(restart it if not). Use one method per agent, not two: both agents load every
+copy they find, so two `roddy` skills compete (Codex lists both as
+`roddy:roddy`).
 
 </details>
 
