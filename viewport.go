@@ -68,7 +68,7 @@ func cmdViewport(args []string) {
 	}
 	// Pages applies the session device to every existing tab; an empty session
 	// can still be configured before the first open.
-	if _, err := browser.Pages(); err != nil {
+	if _, err := sessionPages(browser, s); err != nil {
 		fatal("failed to apply viewport: %v", listPagesFailure(err))
 	}
 	if len(args) > 0 {

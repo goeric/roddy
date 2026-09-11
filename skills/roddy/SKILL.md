@@ -355,6 +355,22 @@ when there is no browser:
 roddy url >/dev/null 2>&1 || roddy start    # restart only if actually dead
 ```
 
+Set reduced motion before navigation when testing animation preferences:
+
+```bash
+roddy emulate --reduced-motion reduce
+roddy emulate --reduced-motion no-preference
+roddy emulate --reduced-motion reset    # restore the browser/system preference
+roddy emulate                           # saved setting as JSON
+```
+
+The setting is saved for this session and reapplied across commands and tabs.
+`open` and `newpage` apply it before navigation, so startup `matchMedia` and CSS
+queries see it. The page still decides whether to change its animations.
+Chrome clears the active override between CLI invocations, so media-query
+listeners can observe preference changes between commands. Keep timed checks
+inside one awaited `js` expression when the preference must stay uninterrupted.
+
 Set a viewport before responsive layout checks:
 
 ```bash

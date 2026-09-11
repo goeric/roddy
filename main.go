@@ -102,8 +102,9 @@ type State struct {
 	SingleProcess bool `json:"single_process,omitempty"` // Chrome launched with --single-process
 	Insecure      bool `json:"insecure,omitempty"`       // Chrome launched with --ignore-certificate-errors
 
-	Extensions []extensionInfo `json:"extensions,omitempty"` // extensions passed to --load-extension
-	Viewport   *viewportSize   `json:"viewport,omitempty"`
+	Extensions    []extensionInfo `json:"extensions,omitempty"` // extensions passed to --load-extension
+	Viewport      *viewportSize   `json:"viewport,omitempty"`
+	ReducedMotion string          `json:"reduced_motion,omitempty"`
 }
 
 // sessionFlagNotes names the launch flags that outlive start, for start's
@@ -161,6 +162,9 @@ func loadState() (*State, error) {
 		if err := s.Viewport.validate(); err != nil {
 			return nil, fmt.Errorf("invalid saved viewport: %w", err)
 		}
+	}
+	if err := validateReducedMotion(s.ReducedMotion); err != nil {
+		return nil, fmt.Errorf("invalid saved emulation: %w", err)
 	}
 	return &s, nil
 }
@@ -222,7 +226,7 @@ func connectWithin(browser *rod.Browser, d time.Duration) error {
 
 // getActivePage returns the currently active page
 func getActivePage(browser *rod.Browser, s *State) (*rod.Page, error) {
-	pages, err := browser.Pages()
+	pages, err := sessionPages(browser, s)
 	if err != nil {
 		return nil, listPagesFailure(err)
 	}
@@ -502,6 +506,8 @@ func main() {
 		cmdWaitIdle(args)
 	case "sleep":
 		cmdSleep(args)
+	case "emulate":
+		cmdEmulate(args)
 	case "viewport":
 		cmdViewport(args)
 	case "screenshot":
@@ -1446,7 +1452,7 @@ func cmdStatus(args []string) {
 	}
 	// A listing that ran out of budget is not an empty browser: reporting
 	// "Pages: 0" for a wedged renderer would be a lie.
-	pages, err := browser.Pages()
+	pages, err := sessionPages(browser, s)
 	if err != nil {
 		fatal("%v", listPagesFailure(err))
 	}
@@ -1575,13 +1581,13 @@ func cmdOpen(args []string) {
 
 	// A listing that failed is not an empty browser: taken for one, open would
 	// silently add a tab and reset the active-page index.
-	pages, err := browser.Pages()
+	pages, err := sessionPages(browser, s)
 	if err != nil {
 		fatal("%v", listPagesFailure(err))
 	}
 	var page *rod.Page
 	if len(pages) == 0 {
-		page, err = browser.Page(proto.TargetCreateTarget{URL: url})
+		page, err = newSessionPage(browser, s, url)
 		if err != nil {
 			fatal("%s", navigateFailure(err, url, s))
 		}
@@ -2245,7 +2251,7 @@ func cmdPages(args []string) {
 	if err != nil {
 		fatal("%v", err)
 	}
-	pages, err := browser.Pages()
+	pages, err := sessionPages(browser, s)
 	if err != nil {
 		fatal("%v", listPagesFailure(err))
 	}
@@ -2279,7 +2285,7 @@ func cmdPage(args []string) {
 	if err != nil {
 		fatal("%v", err)
 	}
-	pages, err := browser.Pages()
+	pages, err := sessionPages(browser, s)
 	if err != nil {
 		fatal("%v", listPagesFailure(err))
 	}
@@ -2315,7 +2321,7 @@ func cmdNewPage(args []string) {
 	}
 
 	// An empty URL opens a blank page.
-	page, err := browser.Page(proto.TargetCreateTarget{URL: url})
+	page, err := newSessionPage(browser, s, url)
 	if err != nil {
 		fatal("%s", navigateFailure(err, url, s))
 	}
@@ -2324,7 +2330,7 @@ func cmdNewPage(args []string) {
 	}
 
 	// Switch active to the new page
-	pages, err := browser.Pages()
+	pages, err := sessionPages(browser, s)
 	if err != nil {
 		fatal("page opened, but the page list could not be read (the active page did not switch): %v", err)
 	}
@@ -2354,7 +2360,7 @@ func cmdClosePage(args []string) {
 	if err != nil {
 		fatal("%v", err)
 	}
-	pages, err := browser.Pages()
+	pages, err := sessionPages(browser, s)
 	if err != nil {
 		fatal("%v", listPagesFailure(err))
 	}
