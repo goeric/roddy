@@ -13,12 +13,18 @@ import (
 )
 
 type screenshotOptions struct {
-	width, height int
-	file          string
+	width, height  int
+	file           string
+	waitAnimations bool
 }
 
 func parseScreenshotArgs(args []string) (screenshotOptions, error) {
 	var opts screenshotOptions
+	args, wait, err := extractWaitAnimations(args)
+	if err != nil {
+		return opts, err
+	}
+	opts.waitAnimations = wait
 	fs := flag.NewFlagSet("screenshot", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	fs.IntVar(&opts.width, "width", 0, "")
@@ -42,7 +48,7 @@ func parseScreenshotArgs(args []string) (screenshotOptions, error) {
 		return opts, sizeErr
 	}
 	if fs.NArg() > 1 {
-		return opts, fmt.Errorf("usage: roddy screenshot [-w N] [-h N] [file]")
+		return opts, fmt.Errorf("usage: roddy screenshot [--wait-animations] [-w N] [-h N] [file]")
 	}
 	opts.file = fs.Arg(0)
 	return opts, nil
@@ -85,6 +91,11 @@ func capturePageScreenshot(page *rod.Page, opts screenshotOptions) (data []byte,
 				err = errors.Join(err, fmt.Errorf("failed to restore viewport: %w", restoreErr))
 			}
 		}()
+	}
+	if opts.waitAnimations {
+		if err := waitPageAnimations(page); err != nil {
+			return nil, err
+		}
 	}
 	request := &proto.PageCaptureScreenshot{Format: proto.PageCaptureScreenshotFormatPng}
 	if opts.height == 0 {
