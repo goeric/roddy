@@ -112,8 +112,12 @@ Waiting:
   roddy waitidle                 Wait for network idle
   roddy sleep <seconds>          Sleep for N seconds
 
+Viewport:
+  roddy viewport [W H | reset]    Inspect/set session viewport (default 1280x800)
+
 Screenshots:
-  roddy screenshot [-w N] [-h N] [file]  Take page screenshot
+  roddy screenshot [-w N] [-h N] [file]  Take page screenshot (temporary dimensions)
+                                  -h captures only the viewport; otherwise full page
   roddy screenshot-el <sel> [f]  Screenshot an element
 
 Tabs:

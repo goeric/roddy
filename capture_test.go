@@ -54,7 +54,7 @@ func TestScreenshot_BackgroundedTargetDoesNotHang(t *testing.T) {
 
 	bringToFront(background)
 
-	data, err := background.Timeout(20*time.Second).Screenshot(true, nil)
+	data, err := capturePageScreenshot(background.Timeout(20*time.Second), screenshotOptions{})
 	if err != nil {
 		t.Fatalf("full-page screenshot of a backgrounded target: %v", err)
 	}

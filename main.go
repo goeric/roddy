@@ -103,6 +103,7 @@ type State struct {
 	Insecure      bool `json:"insecure,omitempty"`       // Chrome launched with --ignore-certificate-errors
 
 	Extensions []extensionInfo `json:"extensions,omitempty"` // extensions passed to --load-extension
+	Viewport   *viewportSize   `json:"viewport,omitempty"`
 }
 
 // sessionFlagNotes names the launch flags that outlive start, for start's
@@ -156,6 +157,11 @@ func loadState() (*State, error) {
 	if err := json.Unmarshal(data, &s); err != nil {
 		return nil, fmt.Errorf("corrupt state file %s: %w", path, err)
 	}
+	if s.Viewport != nil {
+		if err := s.Viewport.validate(); err != nil {
+			return nil, fmt.Errorf("invalid saved viewport: %w", err)
+		}
+	}
 	return &s, nil
 }
 
@@ -183,7 +189,7 @@ func connectBrowser(s *State) (*rod.Browser, error) {
 // reaching the browser, and rod's own deadline on every call made with the
 // returned browser.
 func connectBrowserTimeout(s *State, d time.Duration) (*rod.Browser, error) {
-	browser := rod.New().ControlURL(s.DebugURL)
+	browser := rod.New().ControlURL(s.DebugURL).DefaultDevice(viewportDevice(s.Viewport))
 	if d > 0 {
 		browser = browser.Timeout(d)
 	}
@@ -496,6 +502,8 @@ func main() {
 		cmdWaitIdle(args)
 	case "sleep":
 		cmdSleep(args)
+	case "viewport":
+		cmdViewport(args)
 	case "screenshot":
 		cmdScreenshot(args)
 	case "screenshot-el":
@@ -2181,58 +2189,25 @@ func nextAvailableFile(base, ext string) string {
 }
 
 func cmdScreenshot(args []string) {
-	fs := flag.NewFlagSet("screenshot", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	width := fs.Int("width", 1280, "")
-	fs.IntVar(width, "w", 1280, "")
-	height := fs.Int("height", 0, "")
-	fs.IntVar(height, "h", 0, "")
-
-	if err := fs.Parse(args); err != nil {
+	opts, err := parseScreenshotArgs(args)
+	if err != nil {
 		fatal("%v", err)
 	}
-
-	fullPage := true
-	fs.Visit(func(f *flag.Flag) {
-		if f.Name == "height" || f.Name == "h" {
-			fullPage = false
-		}
-	})
-
-	var file string
-	if fs.NArg() > 0 {
-		file = fs.Arg(0)
-	} else {
-		file = nextAvailableFile("screenshot", ".png")
+	if opts.file == "" {
+		opts.file = nextAvailableFile("screenshot", ".png")
 	}
-
 	_, _, page := withPage()
 	if err := raise(page); err != nil {
 		fatal("%v", err)
 	}
-
-	// Set viewport size
-	viewportHeight := *height
-	if viewportHeight == 0 {
-		viewportHeight = 720
-	}
-	err := proto.EmulationSetDeviceMetricsOverride{
-		Width:             *width,
-		Height:            viewportHeight,
-		DeviceScaleFactor: 1,
-	}.Call(page)
-	if err != nil {
-		fatal("failed to set viewport: %v", err)
-	}
-
-	data, err := page.Screenshot(fullPage, nil)
+	data, err := capturePageScreenshot(page, opts)
 	if err != nil {
 		fatal("screenshot failed: %v", err)
 	}
-	if err := os.WriteFile(file, data, 0644); err != nil {
+	if err := os.WriteFile(opts.file, data, 0644); err != nil {
 		fatal("failed to write screenshot: %v", err)
 	}
-	fmt.Println(file)
+	fmt.Println(opts.file)
 }
 
 func cmdScreenshotEl(args []string) {
