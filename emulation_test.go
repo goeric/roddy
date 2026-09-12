@@ -1,8 +1,10 @@
 package main
 
 import (
-	"fmt"
-	"os"
+	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -21,10 +23,8 @@ func TestReducedMotionAcrossConnections(t *testing.T) {
 	if err := (proto.EmulationSetEmulatedMedia{Features: []*proto.EmulationMediaFeature{{Name: "prefers-reduced-motion", Value: "no-preference"}}}).Call(page); err != nil {
 		t.Fatal(err)
 	}
-	data := fmt.Sprintf(`{"debug_url":%q,"reduced_motion":"reduce"}`, state.DebugURL)
-	if err := os.WriteFile(statePath(), []byte(data), 0644); err != nil {
-		t.Fatal(err)
-	}
+	state.ReducedMotion = "reduce"
+	mustSaveState(t, state)
 	for i := 0; i < 2; i++ {
 		s, err := loadState()
 		if err != nil {
@@ -105,6 +105,63 @@ func TestParseEmulateArgs(t *testing.T) {
 	for _, args := range [][]string{{"--reduced-motion"}, {"--reduced-motion="}, {"--reduced-motion", "false"}, {"--reduced-motion=reduce", "extra"}, {"--color-scheme=dark"}, {"--"}} {
 		if _, err := parseEmulateArgs(args); err == nil {
 			t.Errorf("accepted %q", args)
+		}
+	}
+}
+
+func TestReducedMotionCLI(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Write([]byte(`<script>window.initialMotion=matchMedia('(prefers-reduced-motion: reduce)').matches</script>`))
+	}))
+	defer server.Close()
+	_, s := retireFixture(t)
+	s.Viewport = &viewportSize{Width: 320, Height: 568}
+	mustSaveState(t, s)
+	runCLI(t, 0, "emulate", "--reduced-motion", "reduce")
+	runCLI(t, 0, "open", server.URL)
+	runCLI(t, 0, "assert", "window.initialMotion === true")
+	runCLI(t, 0, "assert", "matchMedia('(prefers-reduced-motion: reduce)').matches")
+	runCLI(t, 0, "newpage", server.URL)
+	runCLI(t, 0, "assert", "window.initialMotion === true")
+	runCLI(t, 2, "emulate", "--reduced-motion", "invalid")
+	runCLI(t, 0, "assert", "matchMedia('(prefers-reduced-motion: reduce)').matches")
+	runCLI(t, 0, "emulate", "--reduced-motion", "no-preference")
+	runCLI(t, 0, "reload")
+	runCLI(t, 0, "assert", "window.initialMotion === false")
+	runCLI(t, 0, "assert", "innerWidth", "320")
+	runCLI(t, 0, "emulate", "--reduced-motion", "reset")
+	state, err := loadState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.ReducedMotion != "" {
+		t.Fatal("reset did not clear the saved preference")
+	}
+}
+
+func TestNewSessionPageTimeoutClosesTarget(t *testing.T) {
+	_, s := retireFixture(t)
+	s.ReducedMotion = "reduce"
+	browser, err := connectBrowserTimeout(s, 300*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = newSessionPage(browser, s, env.server.URL+"/stall")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("navigation error = %v", err)
+	}
+	observer, err := connectBrowserTimeout(s, 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	targets, err := (proto.TargetGetTargets{}).Call(observer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range targets.TargetInfos {
+		if target.Type == "page" {
+			t.Errorf("failed navigation left target %s (%s)", target.TargetID, target.URL)
 		}
 	}
 }
