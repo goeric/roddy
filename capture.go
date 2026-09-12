@@ -40,7 +40,7 @@ func parseScreenshotArgs(args []string) (screenshotOptions, error) {
 		if f.Name == "height" || f.Name == "h" {
 			value = opts.height
 		}
-		if value < 1 || value > 10000000 {
+		if value < 1 || value > maxViewportDimension {
 			sizeErr = fmt.Errorf("screenshot dimensions must be integers from 1 to 10000000")
 		}
 	})
@@ -76,9 +76,6 @@ func capturePageScreenshot(page *rod.Page, opts screenshotOptions) (data []byte,
 		if opts.height != 0 {
 			view.Height = opts.height
 		}
-		if err := page.SetViewport(&view); err != nil {
-			return nil, fmt.Errorf("failed to set screenshot viewport: %w", err)
-		}
 		defer func() {
 			// Cleanup must still run when the capture exhausts its deadline.
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -91,6 +88,9 @@ func capturePageScreenshot(page *rod.Page, opts screenshotOptions) (data []byte,
 				err = errors.Join(err, fmt.Errorf("failed to restore viewport: %w", restoreErr))
 			}
 		}()
+		if err := page.SetViewport(&view); err != nil {
+			return nil, fmt.Errorf("failed to set screenshot viewport: %w", err)
+		}
 	}
 	if opts.waitAnimations {
 		if err := waitPageAnimations(page); err != nil {

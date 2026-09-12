@@ -7,13 +7,15 @@ import (
 	"github.com/go-rod/rod/lib/devices"
 )
 
+const maxViewportDimension = 10000000
+
 type viewportSize struct {
 	Width  int `json:"width"`
 	Height int `json:"height"`
 }
 
 func (v viewportSize) validate() error {
-	if v.Width < 1 || v.Height < 1 || v.Width > 10000000 || v.Height > 10000000 {
+	if v.Width < 1 || v.Height < 1 || v.Width > maxViewportDimension || v.Height > maxViewportDimension {
 		return fmt.Errorf("viewport width and height must be integers from 1 to 10000000")
 	}
 	return nil

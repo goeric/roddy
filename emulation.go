@@ -46,14 +46,12 @@ func applyReducedMotion(page *rod.Page, value string) error {
 
 func sessionPages(browser *rod.Browser, s *State) (rod.Pages, error) {
 	pages, err := browser.Pages()
-	if err != nil {
-		return nil, err
+	if err != nil || s.ReducedMotion == "" {
+		return pages, err
 	}
-	if s.ReducedMotion != "" {
-		for _, page := range pages {
-			if err := applyReducedMotion(page, s.ReducedMotion); err != nil {
-				return nil, err
-			}
+	for _, page := range pages {
+		if err := applyReducedMotion(page, s.ReducedMotion); err != nil {
+			return nil, err
 		}
 	}
 	return pages, nil

@@ -2,9 +2,7 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
 	"image/png"
-	"os"
 	"testing"
 	"time"
 
@@ -13,10 +11,8 @@ import (
 
 func TestViewportPersistsAcrossConnections(t *testing.T) {
 	_, s := retireFixture(t)
-	// Load a saved session on each connection, as separate CLI processes do.
-	if err := writeViewportState(s, `{"width":320,"height":568}`); err != nil {
-		t.Fatal(err)
-	}
+	s.Viewport = &viewportSize{Width: 320, Height: 568}
+	mustSaveState(t, s)
 	var target proto.TargetTargetID
 	for i := 0; i < 2; i++ {
 		state, err := loadState()
@@ -94,23 +90,6 @@ func TestScreenshotKeepsResponsiveLayout(t *testing.T) {
 	if got := page.MustEval(`() => JSON.stringify([innerWidth, innerHeight])`).String(); got != "[320,568]" {
 		t.Fatalf("viewport after temporary resize = %s", got)
 	}
-}
-
-func writeViewportState(s *State, viewport string) error {
-	data, err := json.Marshal(s)
-	if err != nil {
-		return err
-	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(data, &fields); err != nil {
-		return err
-	}
-	fields["viewport"] = json.RawMessage(viewport)
-	data, err = json.Marshal(fields)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(statePath(), data, 0644)
 }
 
 func TestViewportAndScreenshotArgs(t *testing.T) {
