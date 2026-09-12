@@ -8,7 +8,6 @@ import (
 
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/proto"
-	"github.com/go-rod/rod/lib/utils"
 )
 
 func extractWaitAnimations(args []string) ([]string, bool, error) {
@@ -111,14 +110,21 @@ func captureElementScreenshot(el *rod.Element, wait bool) ([]byte, error) {
 	if err := waitPageAnimations(page); err != nil {
 		return nil, err
 	}
-	data, err := page.Screenshot(false, &proto.PageCaptureScreenshot{Format: proto.PageCaptureScreenshotFormatPng})
+	// Read bounds and scroll offsets together so scrolling cannot mix frames.
+	bounds, err := el.Eval(`function() {
+  const rect = this.getBoundingClientRect();
+  return {x:rect.x + window.scrollX,y:rect.y + window.scrollY,width:rect.width,height:rect.height,scale:1};
+ }`)
 	if err != nil {
 		return nil, err
 	}
-	shape, err := el.Shape()
-	if err != nil {
-		return nil, err
+	var clip proto.PageViewport
+	if err := bounds.Value.Unmarshal(&clip); err != nil {
+		return nil, fmt.Errorf("failed to read element bounds: %w", err)
 	}
-	box := shape.Box()
-	return utils.CropImage(data, 0, int(box.X), int(box.Y), int(box.Width), int(box.Height))
+	return page.Screenshot(false, &proto.PageCaptureScreenshot{
+		Format:                proto.PageCaptureScreenshotFormatPng,
+		CaptureBeyondViewport: true,
+		Clip:                  &clip,
+	})
 }

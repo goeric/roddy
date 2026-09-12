@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"image/png"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -144,4 +146,70 @@ func TestScreenshotWaitAnimationsFlag(t *testing.T) {
 	if err != nil || opts.waitAnimations || opts.selector != "--wait-animations" {
 		t.Fatalf("literal selector = %#v, %v", opts, err)
 	}
+}
+
+func TestElementWaitAnimationsAfterLayoutMovement(t *testing.T) {
+	page := animationPage(t)
+	page.MustEval(`() => { const box=document.querySelector('#box'); box.style.background='blue'; box.animate([{marginTop:'0px'}, {marginTop:'1600px'}], {duration:400,fill:'forwards'}); }`)
+	data, err := captureElementScreenshot(page.Timeout(3*time.Second).MustElement("#box"), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertBlueCapture(t, data)
+	config, err := png.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Width != 100 || config.Height != 100 {
+		t.Fatalf("capture = %dx%d", config.Width, config.Height)
+	}
+}
+
+func TestElementWaitAnimationsRetinaAndLargeElement(t *testing.T) {
+	page := animationPage(t)
+	page.MustSetViewport(320, 568, 2, false)
+	page.MustEval(`() => { const box=document.querySelector('#box'); box.style.width='400px'; box.style.height='900px'; box.style.background='blue'; }`)
+	data, err := captureElementScreenshot(page.Timeout(3*time.Second).MustElement("#box"), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertBlueCapture(t, data)
+	config, err := png.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Width != 800 || config.Height != 1800 {
+		t.Fatalf("capture = %dx%d, want 800x1800", config.Width, config.Height)
+	}
+	decoded, err := png.Decode(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	red, _, blue, _ := decoded.At(790, 1790).RGBA()
+	if red != 0 || blue != 65535 {
+		t.Fatal("pixels beyond the viewport were not captured")
+	}
+}
+
+func TestAnimationScreenshotCLI(t *testing.T) {
+	_, s := retireFixture(t)
+	mustSaveState(t, s)
+	runCLI(t, 0, "viewport", "320", "568")
+	runCLI(t, 0, "open", env.server.URL)
+	runCLI(t, 0, "js", `(() => { document.body.innerHTML='<div id="box" style="width:100px;height:100px;background:blue"></div>'; window.animation=document.querySelector('#box').animate([{background:'red'},{background:'blue'}],{duration:600,fill:'forwards'}); return true; })()`)
+	file := filepath.Join(t.TempDir(), "page.png")
+	runCLI(t, 0, "screenshot", "--wait-animations", file)
+	data, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertBlueCapture(t, data)
+	runCLI(t, 0, "js", `(() => { window.animation=document.querySelector('#box').animate([{background:'red'},{background:'blue'}],{duration:600,fill:'forwards'}); return true; })()`)
+	file = filepath.Join(t.TempDir(), "element.png")
+	runCLI(t, 0, "screenshot-el", "#box", file, "--wait-animations")
+	data, err = os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertBlueCapture(t, data)
 }

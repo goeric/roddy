@@ -590,6 +590,8 @@ scrolling an element into view, and requires two animation frames without
 eligible animations before capture. Infinite, paused, zero-playback-rate, and
 scroll-driven animations keep their current behavior and do not hold up the
 wait. Animations finish naturally, including their completion callbacks.
+Element capture in this mode includes the full element, even beyond the viewport,
+and preserves the browser’s device pixel ratio.
 
 The wait shares `ROD_TIMEOUT` with the rest of the command and exits 2 on timeout;
 any temporary viewport is restored. The flag is opt-in and can appear before or
