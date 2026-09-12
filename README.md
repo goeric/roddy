@@ -535,14 +535,32 @@ roddy waitidle             # Wait for network to be idle
 roddy sleep 2.5            # Sleep for N seconds
 ```
 
+### Viewport
+
+```bash
+roddy viewport 320 568                   # Persist a CSS viewport for this session
+roddy viewport                           # Print the session viewport as JSON
+roddy viewport reset                     # Restore the default 1280 × 800 viewport
+```
+
+The viewport applies across commands, reloads, and tabs in this session. It
+changes CSS dimensions, not the user agent or touch support. Set it before
+`open` when the page reads its size during startup.
+
 ### Screenshots
 
 ```bash
 roddy screenshot                         # Save as screenshot.png
 roddy screenshot page.png                # Save to specific file
-roddy screenshot -w 1280 -h 720 out.png  # Set viewport width/height
+roddy screenshot -w 1280 -h 720 out.png  # Temporary viewport width/height
 roddy screenshot-el ".chart" chart.png   # Screenshot specific element
 ```
+
+Screenshots use the session viewport. Without `-h`, capture includes the whole
+page without resizing its responsive layout. `-h` switches to viewport-only
+capture. `-w` and `-h` override dimensions for that capture only; unspecified
+dimensions keep the session value, and the viewport is restored afterward.
+Use `viewport` when subsequent layout assertions must use the same dimensions.
 
 ### Manage tabs
 
@@ -897,7 +915,8 @@ The tool uses the [rod](https://github.com/go-rod/rod) Go library which communic
 | `waitstable` | | Wait for DOM stability |
 | `waitidle` | | Wait for network idle |
 | `sleep` | `<seconds>` | Sleep N seconds |
-| `screenshot` | `[-w N] [-h N] [file]` | Page screenshot (optional viewport size) |
+| `viewport` | `[<width> <height> \| reset]` | Inspect or persist the session viewport |
+| `screenshot` | `[-w N] [-h N] [file]` | Page screenshot (optional temporary viewport size) |
 | `screenshot-el` | `<selector> [file]` | Element screenshot |
 | `pages` | | List tabs |
 | `page` | `<index>` | Switch tab |

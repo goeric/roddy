@@ -355,6 +355,20 @@ when there is no browser:
 roddy url >/dev/null 2>&1 || roddy start    # restart only if actually dead
 ```
 
+Set a viewport before responsive layout checks:
+
+```bash
+roddy viewport 320 568                  # persists across commands, reloads and tabs
+roddy viewport                          # session CSS dimensions as JSON
+roddy viewport reset                    # default 1280 × 800
+```
+
+This changes dimensions only, not touch support or the user agent. Set it before
+`open` to make startup code see the chosen dimensions. Screenshot `-w`/`-h`
+options are temporary: they restore the session viewport before returning.
+Unspecified screenshot dimensions use the session values. Full-page capture
+preserves responsive layout instead of stretching the viewport to the content.
+
 Capture & misc:
 
 ```bash
