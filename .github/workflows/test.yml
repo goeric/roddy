@@ -20,3 +20,9 @@ jobs:
         run: go build -o roddy${{ matrix.os == 'windows-latest' && '.exe' || '' }} .
       - name: Check version flag
         run: ./roddy${{ matrix.os == 'windows-latest' && '.exe' || '' }} --version
+
+      - name: Vet
+        run: go vet ./...
+      - name: Browser regression tests
+        if: runner.os == 'Linux'
+        run: go test ./...

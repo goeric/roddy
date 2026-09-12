@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -8,8 +10,8 @@ import (
 	"github.com/go-rod/rod/lib/proto"
 )
 
-// visibilityState reports what the page thinks its own visibility is, which is
-// how Chromium exposes whether a target is the foreground one.
+// visibilityState establishes the background fixture; a raised target may
+// still report "hidden" while producing animation frames.
 func visibilityState(t *testing.T, p *rod.Page) string {
 	t.Helper()
 	res, err := p.Eval("() => document.visibilityState")
@@ -35,13 +37,17 @@ func openTwoPages(t *testing.T) (background, foreground *rod.Page) {
 	return background, foreground
 }
 
-func TestBringToFront_MakesTargetVisible(t *testing.T) {
+func TestBringToFront_ResumesRendering(t *testing.T) {
 	background, _ := openTwoPages(t)
-
+	frame := `() => new Promise(resolve => requestAnimationFrame(resolve))`
+	if _, err := background.Timeout(150 * time.Millisecond).Eval(frame); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("background target produced a frame before activation: %v", err)
+	}
 	bringToFront(background)
-
-	if got := visibilityState(t, background); got != "visible" {
-		t.Errorf("visibilityState = %q after bringToFront, want %q", got, "visible")
+	// Closing and reopening all tabs can leave visibilityState at "hidden".
+	// Frame delivery is what captures and interactions actually require.
+	if _, err := background.Timeout(paintProbe).Eval(frame); err != nil {
+		t.Fatalf("raised target did not produce an animation frame: %v", err)
 	}
 }
 
