@@ -398,6 +398,15 @@ roddy pages / page <i> / newpage [url] / closepage [i]   # tabs
 roddy ax-tree [--depth N] [--json] / ax-find [--name N] [--role R] / ax-node <sel>
 ```
 
+Use `--wait-animations` on `screenshot` or `screenshot-el` when an entrance
+animation would otherwise be caught mid-frame. It waits after resizing or
+scrolling, lets finite CSS/Web Animations finish naturally, and requires two
+quiet animation frames. Infinite, paused, zero-speed, and scroll-driven
+animations are ignored. The wait shares `ROD_TIMEOUT`; timeout exits 2 and
+restores temporary screenshot dimensions. This covers the top document, not
+iframe animations or JavaScript/canvas loops. It does not replace waiting for
+app readiness, and `waitstable` alone does not settle animations.
+
 With no filename, `screenshot` writes `screenshot.png` in the **current
 directory** (then `screenshot-2.png`, `screenshot-3.png`, …) and prints the
 path — it does not write to stdout. Pass an explicit path when you care where it

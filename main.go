@@ -2217,29 +2217,26 @@ func cmdScreenshot(args []string) {
 }
 
 func cmdScreenshotEl(args []string) {
-	if len(args) < 1 {
-		fatal("usage: roddy screenshot-el <selector> [file]")
-	}
-	file := "element.png"
-	if len(args) > 1 {
-		file = args[1]
+	opts, err := parseElementScreenshotArgs(args)
+	if err != nil {
+		fatal("%v", err)
 	}
 	_, _, page := withPage()
-	el, err := page.Element(args[0])
+	el, err := page.Element(opts.selector)
 	if err != nil {
 		fatal("element not found: %v", err)
 	}
 	if err := raise(page); err != nil {
 		fatal("%v", err)
 	}
-	data, err := el.Screenshot(proto.PageCaptureScreenshotFormatPng, 0)
+	data, err := captureElementScreenshot(el, opts.waitAnimations)
 	if err != nil {
 		fatal("screenshot failed: %v", err)
 	}
-	if err := os.WriteFile(file, data, 0644); err != nil {
+	if err := os.WriteFile(opts.file, data, 0644); err != nil {
 		fatal("failed to write screenshot: %v", err)
 	}
-	fmt.Printf("Saved %s (%d bytes)\n", file, len(data))
+	fmt.Printf("Saved %s (%d bytes)\n", opts.file, len(data))
 }
 
 func cmdPages(args []string) {

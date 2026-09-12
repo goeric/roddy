@@ -574,6 +574,8 @@ roddy screenshot                         # Save as screenshot.png
 roddy screenshot page.png                # Save to specific file
 roddy screenshot -w 1280 -h 720 out.png  # Temporary viewport width/height
 roddy screenshot-el ".chart" chart.png   # Screenshot specific element
+roddy screenshot --wait-animations page.png
+roddy screenshot-el --wait-animations ".chart" chart.png
 ```
 
 Screenshots use the session viewport. Without `-h`, capture includes the whole
@@ -581,6 +583,21 @@ page without resizing its responsive layout. `-h` switches to viewport-only
 capture. `-w` and `-h` override dimensions for that capture only; unspecified
 dimensions keep the session value, and the viewport is restored afterward.
 Use `viewport` when subsequent layout assertions must use the same dimensions.
+
+`--wait-animations` waits for finite, running CSS transitions/animations and
+Web Animations in the top document. It waits after temporary resizing, or after
+scrolling an element into view, and requires two animation frames without
+eligible animations before capture. Infinite, paused, zero-playback-rate, and
+scroll-driven animations keep their current behavior and do not hold up the
+wait. Animations finish naturally, including their completion callbacks.
+Element capture in this mode includes the full element, even beyond the viewport,
+and preserves the browser’s device pixel ratio.
+
+The wait shares `ROD_TIMEOUT` with the rest of the command and exits 2 on timeout;
+any temporary viewport is restored. The flag is opt-in and can appear before or
+after the filename. It does not wait for iframe animations, canvas/JavaScript
+rendering loops, or animations scheduled after the quiet frames. `waitstable`
+checks DOM stability and does not replace this animation wait.
 
 ### Manage tabs
 
@@ -937,8 +954,8 @@ The tool uses the [rod](https://github.com/go-rod/rod) Go library which communic
 | `sleep` | `<seconds>` | Sleep N seconds |
 | `emulate` | `[--reduced-motion reduce\|no-preference\|reset]` | Inspect or set reduced-motion emulation |
 | `viewport` | `[<width> <height> \| reset]` | Inspect or persist the session viewport |
-| `screenshot` | `[-w N] [-h N] [file]` | Page screenshot (optional temporary viewport size) |
-| `screenshot-el` | `<selector> [file]` | Element screenshot |
+| `screenshot` | `[--wait-animations] [-w N] [-h N] [file]` | Page screenshot (optional temporary viewport size) |
+| `screenshot-el` | `[--wait-animations] <selector> [file]` | Element screenshot |
 | `pages` | | List tabs |
 | `page` | `<index>` | Switch tab |
 | `newpage` | `[url]` | Open new tab |
