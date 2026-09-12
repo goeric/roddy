@@ -112,6 +112,11 @@ Waiting:
   roddy waitidle                 Wait for network idle
   roddy sleep <seconds>          Sleep for N seconds
 
+Emulation:
+  roddy emulate [--reduced-motion reduce|no-preference|reset]
+                                Inspect/set saved motion preference
+                                Applied during page commands; cleared on disconnect
+
 Viewport:
   roddy viewport [W H | reset]    Inspect/set session viewport (default 1280x800)
 

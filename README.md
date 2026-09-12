@@ -547,6 +547,26 @@ The viewport applies across commands, reloads, and tabs in this session. It
 changes CSS dimensions, not the user agent or touch support. Set it before
 `open` when the page reads its size during startup.
 
+### Reduced-motion emulation
+
+```bash
+roddy emulate --reduced-motion reduce          # Request reduced motion
+roddy emulate --reduced-motion no-preference   # Explicitly test ordinary motion
+roddy emulate --reduced-motion reset           # Use the browser/system preference
+roddy emulate                                  # Print the saved setting as JSON
+```
+
+The setting is saved for the session and reapplied across commands and tabs.
+Set it before `open` or `newpage` to make startup `matchMedia` calls and CSS
+media queries see the preference. It does not disable animations itself: the
+page decides how to respond to `prefers-reduced-motion`.
+
+Chrome clears the active media override when a CLI connection closes. The saved
+setting is reapplied during each page command; between commands the page can
+observe the system preference, including `matchMedia` change events. For timed
+checks that need uninterrupted emulation, await the interval and assertion in
+one `js` command.
+
 ### Screenshots
 
 ```bash
@@ -915,6 +935,7 @@ The tool uses the [rod](https://github.com/go-rod/rod) Go library which communic
 | `waitstable` | | Wait for DOM stability |
 | `waitidle` | | Wait for network idle |
 | `sleep` | `<seconds>` | Sleep N seconds |
+| `emulate` | `[--reduced-motion reduce\|no-preference\|reset]` | Inspect or set reduced-motion emulation |
 | `viewport` | `[<width> <height> \| reset]` | Inspect or persist the session viewport |
 | `screenshot` | `[-w N] [-h N] [file]` | Page screenshot (optional temporary viewport size) |
 | `screenshot-el` | `<selector> [file]` | Element screenshot |
