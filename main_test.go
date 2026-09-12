@@ -37,6 +37,10 @@ type testEnv struct {
 var env *testEnv
 
 func TestMain(m *testing.M) {
+	if os.Getenv("RODDY_TEST_CLI") == "1" {
+		main()
+		os.Exit(0)
+	}
 	// Launch headless Chrome once for all tests
 	l := launcher.New().
 		Set("no-sandbox").
